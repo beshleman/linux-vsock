@@ -13,11 +13,13 @@
 #include <linux/module.h>
 #include <linux/list.h>
 #include <linux/atomic.h>
+#include <linux/ethtool.h>
 #include <linux/virtio.h>
 #include <linux/virtio_ids.h>
 #include <linux/virtio_config.h>
 #include <linux/virtio_vsock.h>
 #include <net/sock.h>
+#include <net/pkt_sched.h>
 #include <linux/mutex.h>
 #include <net/af_vsock.h>
 
@@ -28,6 +30,7 @@ static struct virtio_transport virtio_transport; /* forward declaration */
 
 struct virtio_vsock {
 	struct virtio_device *vdev;
+	struct net_device *dev;
 	struct virtqueue *vqs[VSOCK_VQ_MAX];
 
 	/* Virtqueue processing is deferred to a workqueue */
@@ -65,6 +68,39 @@ struct virtio_vsock {
 	u32 guest_cid;
 	bool seqpacket_allow;
 };
+
+static netdev_tx_t virtio_vsock_start_xmit(struct sk_buff *skb, struct net_device *dev)
+{
+
+	printk(KERN_ERR "vvsk->%s called\n", __func__);
+	return NETDEV_TX_OK;
+}
+
+static u32 always_on(struct net_device *dev)
+{
+	return 1;
+}
+
+static const struct ethtool_ops virtio_vsock_ethtool_ops = {
+	.get_link		= always_on,
+};
+
+const struct net_device_ops virtio_vsock_netdev_ops = {
+	.ndo_start_xmit = virtio_vsock_start_xmit,
+};
+
+static void virtio_vsock_setup(struct net_device *dev)
+{
+	dev->netdev_ops = &virtio_vsock_netdev_ops;
+	dev->ethtool_ops = &virtio_vsock_ethtool_ops;
+
+	dev->needs_free_netdev = true;
+	/* TODO: add flags (like IFF_VLAN_CHALLENGED, etc... */
+	dev->flags = IFF_NOARP;
+
+	dev->mtu = VIRTIO_VSOCK_MAX_PKT_BUF_SIZE;
+	dev->tx_queue_len = DEFAULT_TX_QUEUE_LEN;
+}
 
 static u32 virtio_transport_get_local_cid(void)
 {
@@ -168,30 +204,48 @@ virtio_transport_send_pkt(void *opaque)
 {
 	struct sk_buff *pkt = opaque;
 	struct virtio_vsock *vsock;
-	int len = pkt->len;
+	struct virtio_vsock_hdr *hdr = (struct virtio_vsock_hdr *)pkt->data;
+	struct virtio_vsock_skb_cb *cb;
+	int len = hdr->len;
+	int err;
 
 	rcu_read_lock();
 	vsock = rcu_dereference(the_virtio_vsock);
 	if (!vsock) {
-		virtio_transport_free_pkt(pkt);
+		kfree_skb(pkt);
 		len = -ENODEV;
 		goto out_rcu;
 	}
 
-	if (le64_to_cpu(pkt->hdr.dst_cid) == vsock->guest_cid) {
-		virtio_transport_free_pkt(pkt);
+	if (le64_to_cpu(hdr->dst_cid) == vsock->guest_cid) {
+		kfree_skb(pkt);
 		len = -ENODEV;
 		goto out_rcu;
 	}
 
-	if (pkt->reply)
+	cb = (struct virtio_vsock_skb_cb *)pkt->cb;
+	if (cb->reply)
 		atomic_inc(&vsock->queued_replies);
 
-	spin_lock_bh(&vsock->send_pkt_list_lock);
-	list_add_tail(&pkt->list, &vsock->send_pkt_list);
-	spin_unlock_bh(&vsock->send_pkt_list_lock);
+	dev_hold(vsock->dev);
+	pkt->dev = vsock->dev;
+	if (!pkt->dev) {
+		kfree_skb(pkt);
+		len = -ENODEV;
+		goto out_dev_put;
+	}
 
-	queue_work(virtio_vsock_workqueue, &vsock->send_pkt_work);
+	err = dev_queue_xmit(pkt);
+	if (err > 0)
+		err = net_xmit_errno(err);
+
+	if (err) {
+		kfree_skb(pkt);
+		len = -ENODEV;
+	}
+
+out_dev_put:
+	dev_put(vsock->dev);
 
 out_rcu:
 	rcu_read_unlock();
@@ -579,6 +633,7 @@ static int virtio_vsock_probe(struct virtio_device *vdev)
 		"tx",
 		"event",
 	};
+	struct net_device *dev = NULL;
 	struct virtio_vsock *vsock = NULL;
 	int ret;
 
@@ -640,12 +695,40 @@ static int virtio_vsock_probe(struct virtio_device *vdev)
 	if (virtio_has_feature(vdev, VIRTIO_VSOCK_F_SEQPACKET))
 		vsock->seqpacket_allow = true;
 
+	dev = alloc_netdev(0, "vvsk", NET_NAME_UNKNOWN, virtio_vsock_setup);
+	if (!dev) {
+		ret = -ENOMEM;
+		goto out;
+	}
+
+	vsock->dev = dev;
+	SET_NETDEV_DEV(dev, &vdev->dev);
+
+	ret = register_netdev(dev);
+	if (ret < 0)
+		goto out_free_netdev;
+
 	vdev->priv = vsock;
+
+	rtnl_lock();
+	if (dev_open(dev, NULL)) {
+		ret = -ENOMEM;
+		rtnl_unlock();
+		goto out_unregister_netdev;
+	}
+	rtnl_unlock();
+
 	rcu_assign_pointer(the_virtio_vsock, vsock);
 
 	mutex_unlock(&the_virtio_vsock_mutex);
 
 	return 0;
+
+out_unregister_netdev:
+	unregister_netdev(dev);
+
+out_free_netdev:
+	kfree(dev);
 
 out:
 	kfree(vsock);

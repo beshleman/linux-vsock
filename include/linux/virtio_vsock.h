@@ -10,6 +10,7 @@
 #define VIRTIO_VSOCK_DEFAULT_RX_BUF_SIZE	(1024 * 4)
 #define VIRTIO_VSOCK_MAX_BUF_SIZE		0xFFFFFFFFUL
 #define VIRTIO_VSOCK_MAX_PKT_BUF_SIZE		(1024 * 64)
+#define VIRTIO_VSOCK_DEV_NAME "vvsk"
 
 enum {
 	VSOCK_VQ_RX     = 0, /* for host to guest data */
@@ -61,6 +62,12 @@ struct virtio_vsock_pkt_info {
 	u16 op;
 	u32 flags;
 	bool reply;
+};
+
+struct virtio_vsock_skb_cb {
+	struct vsock_sock *vsk;
+	bool reply;
+
 };
 
 struct virtio_transport {
@@ -151,7 +158,7 @@ void virtio_transport_destruct(struct vsock_sock *vsk);
 void virtio_transport_recv_pkt(struct virtio_transport *t,
 			       struct virtio_vsock_pkt *pkt);
 void virtio_transport_free_pkt(struct virtio_vsock_pkt *pkt);
-void virtio_transport_inc_tx_pkt(struct virtio_vsock_sock *vvs, struct virtio_vsock_pkt *pkt);
+void virtio_transport_inc_tx_pkt(struct virtio_vsock_sock *vvs, struct sk_buff *pkt);
 u32 virtio_transport_get_credit(struct virtio_vsock_sock *vvs, u32 wanted);
 void virtio_transport_put_credit(struct virtio_vsock_sock *vvs, u32 credit);
 void virtio_transport_deliver_tap_pkt(struct virtio_vsock_pkt *pkt);
