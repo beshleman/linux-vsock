@@ -27,8 +27,9 @@ static u32 vsock_loopback_get_local_cid(void)
 	return VMADDR_CID_LOCAL;
 }
 
-static int vsock_loopback_send_pkt(struct virtio_vsock_pkt *pkt)
+static int vsock_loopback_send_pkt(void *opaque)
 {
+	struct virtio_vsock_pkt *pkt = opaque;
 	struct vsock_loopback *vsock = &the_vsock_loopback;
 	int len = pkt->len;
 

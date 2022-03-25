@@ -164,8 +164,9 @@ out:
 }
 
 static int
-virtio_transport_send_pkt(struct virtio_vsock_pkt *pkt)
+virtio_transport_send_pkt(void *opaque)
 {
+	struct sk_buff *pkt = opaque;
 	struct virtio_vsock *vsock;
 	int len = pkt->len;
 

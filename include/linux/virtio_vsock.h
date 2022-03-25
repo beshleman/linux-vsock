@@ -68,7 +68,7 @@ struct virtio_transport {
 	struct vsock_transport transport;
 
 	/* Takes ownership of the packet */
-	int (*send_pkt)(struct virtio_vsock_pkt *pkt);
+	int (*send_pkt)(void *pkt);
 };
 
 ssize_t

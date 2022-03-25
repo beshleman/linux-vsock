@@ -278,8 +278,9 @@ static void vhost_transport_send_pkt_work(struct vhost_work *work)
 }
 
 static int
-vhost_transport_send_pkt(struct virtio_vsock_pkt *pkt)
+vhost_transport_send_pkt(void *opaque)
 {
+	struct virtio_vsock_pkt *pkt = opaque;
 	struct vhost_vsock *vsock;
 	int len = pkt->len;
 
