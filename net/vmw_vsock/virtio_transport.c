@@ -95,7 +95,6 @@ static netdev_tx_t virtio_vsock_start_xmit(struct sk_buff *skb, struct net_devic
 	struct virtio_vsock *vsock;
 	struct virtqueue *vq;
 	int err;
-	int ret;
 
 	rcu_read_lock();
 	vsock = rcu_dereference(the_virtio_vsock);
@@ -104,8 +103,6 @@ static netdev_tx_t virtio_vsock_start_xmit(struct sk_buff *skb, struct net_devic
 
 	if (!vsock->tx_run)
 		goto out;
-
-	printk(KERN_ERR "skb->len=%d\n", skb->len);
 
 	vq = vsock->vqs[VSOCK_VQ_TX];
 	sg_init_table(vsock->sg, skb_shinfo(skb)->nr_frags + 1);
