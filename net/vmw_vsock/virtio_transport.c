@@ -23,6 +23,8 @@
 #include <linux/mutex.h>
 #include <net/af_vsock.h>
 
+#define TRACE() trace_printk("%s:%d\n", __func__, __LINE__)
+
 static struct workqueue_struct *virtio_vsock_workqueue;
 static struct virtio_vsock __rcu *the_virtio_vsock;
 static DEFINE_MUTEX(the_virtio_vsock_mutex); /* protects the_virtio_vsock */
@@ -41,8 +43,12 @@ struct virtio_vsock {
 	/* The following fields are protected by tx_lock.  vqs[VSOCK_VQ_TX]
 	 * must be accessed with tx_lock held.
 	 */
+	spinlock_t tx_spin_lock;
+	/* TX: fragments + linear part of skb + vsock header */
+	struct scatterlist sg[MAX_SKB_FRAGS + 2];
 	struct mutex tx_lock;
 	bool tx_run;
+
 
 	struct work_struct send_pkt_work;
 	spinlock_t send_pkt_list_lock;
@@ -69,10 +75,84 @@ struct virtio_vsock {
 	bool seqpacket_allow;
 };
 
+
+static void free_xmit_skbs(struct virtqueue *vq)
+{
+	(void)vq;
+
+	/**
+	 * TODO: check that tx_spin_lock is held.
+	 * TODO: free skbs from vq.
+	 */
+	printk(KERN_ERR "%s: TODO: free skbs from vq\n", __func__);
+}
+
 static netdev_tx_t virtio_vsock_start_xmit(struct sk_buff *skb, struct net_device *dev)
 {
+	int num_sg;
+	bool restart_rx = false;
+	int qnum = skb_get_queue_mapping(skb);
+	struct virtio_vsock *vsock;
+	struct virtqueue *vq;
+	int err;
+	int ret;
 
-	printk(KERN_ERR "vvsk->%s called\n", __func__);
+	rcu_read_lock();
+	vsock = rcu_dereference(the_virtio_vsock);
+
+	spin_lock_bh(&vsock->tx_spin_lock);
+
+	if (!vsock->tx_run)
+		goto out;
+
+	printk(KERN_ERR "skb->len=%d\n", skb->len);
+
+	vq = vsock->vqs[VSOCK_VQ_TX];
+	sg_init_table(vsock->sg, skb_shinfo(skb)->nr_frags + 1);
+	num_sg = skb_to_sgvec(skb, vsock->sg, 0, skb->len);
+	if (unlikely(num_sg < 0))
+		goto out;
+
+	err = virtqueue_add_outbuf(vq, vsock->sg, num_sg, skb, GFP_ATOMIC);
+	if (unlikely(err)) {
+		printk(KERN_ERR "%s: err=%d\n", __func__, err);
+		/*
+		 * This should never happen because we should be stopping the
+		 * queue before reaching the vq limit.
+		 */
+		dev_kfree_skb_any(skb);
+		goto out;
+	}
+
+	TRACE();
+
+	skb_orphan(skb);
+	nf_reset_ct(skb);
+	TRACE();
+
+	/* Stop the queue if running low on space, to avoid dropping future packets. */
+	if (vq->num_free < 2*MAX_SKB_FRAGS) {
+		netif_stop_subqueue(dev, qnum);
+		free_xmit_skbs(vq);
+		if (vq->num_free >= 2+MAX_SKB_FRAGS) {
+			netif_start_subqueue(dev, qnum);
+			virtqueue_disable_cb(vq);
+		}
+	}
+	TRACE();
+
+	/* Handle enqueuing replies */
+	virtqueue_kick(vq);
+	TRACE();
+
+out:
+	rcu_read_unlock();
+	spin_unlock_bh(&vsock->tx_spin_lock);
+	TRACE();
+
+	if (restart_rx)
+		queue_work(virtio_vsock_workqueue, &vsock->rx_work);
+
 	return NETDEV_TX_OK;
 }
 
@@ -668,6 +748,7 @@ static int virtio_vsock_probe(struct virtio_device *vdev)
 	vsock->rx_buf_max_nr = 0;
 	atomic_set(&vsock->queued_replies, 0);
 
+	spin_lock_init(&vsock->tx_spin_lock);
 	mutex_init(&vsock->tx_lock);
 	mutex_init(&vsock->rx_lock);
 	mutex_init(&vsock->event_lock);
