@@ -86,7 +86,7 @@ virtio_transport_alloc_pkt(struct virtio_vsock_pkt_info *info,
 		}
 	}
 
-	hdr = skb_push(skb, sizeof(hdr));
+	hdr = skb_push(skb, sizeof(*hdr));
 	hdr->type	= cpu_to_le16(info->type);
 	hdr->op		= cpu_to_le16(info->op);
 	hdr->src_cid	= cpu_to_le64(src_cid);
