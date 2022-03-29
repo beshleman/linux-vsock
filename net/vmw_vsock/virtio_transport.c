@@ -24,7 +24,6 @@
 #include <net/af_vsock.h>
 
 #define TRACE() trace_printk("%s:%d\n", __func__, __LINE__)
-#define NUM_OF_SGS (MAX_SKB_FRAGS + 2)
 
 static struct workqueue_struct *virtio_vsock_workqueue;
 static struct virtio_vsock __rcu *the_virtio_vsock;
@@ -45,8 +44,6 @@ struct virtio_vsock {
 	 * must be accessed with tx_lock held.
 	 */
 	spinlock_t tx_spin_lock;
-	/* TX: fragments + linear part of skb + vsock header */
-	struct scatterlist sg[NUM_OF_SGS];
 	struct mutex tx_lock;
 	bool tx_run;
 
@@ -77,8 +74,8 @@ struct virtio_vsock {
 };
 
 
-/**
- * Must be called when tx_spin_lock is held.
+/*
+ * Must be called when tx_spin_lock is held. Reclaims used buffers from the virtqueue.
  */
 static void free_xmit_skbs(struct virtqueue *vq)
 {
@@ -93,9 +90,8 @@ static void free_xmit_skbs(struct virtqueue *vq)
 
 static netdev_tx_t virtio_vsock_start_xmit(struct sk_buff *skb, struct net_device *dev)
 {
-	int num_sg;
 	bool restart_rx = false;
-	int qnum = skb_get_queue_mapping(skb);
+	struct scatterlist sg;
 	struct virtio_vsock *vsock;
 	struct virtqueue *vq;
 	int err;
@@ -109,12 +105,8 @@ static netdev_tx_t virtio_vsock_start_xmit(struct sk_buff *skb, struct net_devic
 		goto out;
 
 	vq = vsock->vqs[VSOCK_VQ_TX];
-	sg_init_table(vsock->sg, skb_shinfo(skb)->nr_frags + 1);
-	num_sg = skb_to_sgvec(skb, vsock->sg, 0, skb->len);
-	if (unlikely(num_sg < 0))
-		goto out;
-
-	err = virtqueue_add_outbuf(vq, vsock->sg, num_sg, skb, GFP_ATOMIC);
+	sg_init_one(&sg, skb->data, skb->len);
+	err = virtqueue_add_outbuf(vq, &sg, 1, skb, GFP_ATOMIC);
 	if (unlikely(err)) {
 		printk(KERN_ERR "%s: err=%d\n", __func__, err);
 		/*
@@ -122,39 +114,46 @@ static netdev_tx_t virtio_vsock_start_xmit(struct sk_buff *skb, struct net_devic
 		 * queue before reaching the vq limit.
 		 */
 		dev_kfree_skb_any(skb);
+		err = NETDEV_TX_BUSY;
 		goto out;
 	}
 
-	TRACE();
-
 	skb_orphan(skb);
 	nf_reset_ct(skb);
-	TRACE();
 
 	/* Stop the queue if running low on space, to avoid dropping future packets. */
-	if (vq->num_free < NUM_OF_SGS) {
-		netif_stop_subqueue(dev, qnum);
+	if (vq->num_free == 0) {
+		printk(KERN_ERR "%s: vq->num_free == 0 \n", __func__);
+		netif_stop_queue(dev);
 		free_xmit_skbs(vq);
-		if (vq->num_free >= NUM_OF_SGS) {
-			netif_start_subqueue(dev, qnum);
-			virtqueue_disable_cb(vq);
+		if (vq->num_free == 0) {
+			/* 
+			 * At this point we have tried everything we can to
+			 * send this packet but with no success. Our attempts
+			 * to free buffer space has failed. This probably means
+			 * we are failing to manage our queue properly.
+			 * Returning NETDEV_TX_BUSY is a last resort, asking
+			 * the queueing layer to requeue this packet.
+		 	 */
+			err = NETDEV_TX_BUSY;
+			goto out;
 		}
+
+		netif_start_queue(dev);
 	}
-	TRACE();
 
 	/* Handle enqueuing replies */
 	virtqueue_kick(vq);
-	TRACE();
 
+	err = NETDEV_TX_OK;
 out:
 	rcu_read_unlock();
 	spin_unlock_bh(&vsock->tx_spin_lock);
-	TRACE();
 
 	if (restart_rx)
 		queue_work(virtio_vsock_workqueue, &vsock->rx_work);
 
-	return NETDEV_TX_OK;
+	return err;
 }
 
 static u32 always_on(struct net_device *dev)
@@ -429,27 +428,25 @@ static void virtio_transport_tx_work(struct work_struct *work)
 	bool added = false;
 
 	vq = vsock->vqs[VSOCK_VQ_TX];
-	mutex_lock(&vsock->tx_lock);
+	spin_lock_bh(&vsock->tx_spin_lock);
 
-	if (!vsock->tx_run)
-		goto out;
+	if (!vsock->tx_run) {
+		spin_unlock_bh(&vsock->tx_spin_lock);
+		return;
+	}
 
 	do {
-		struct virtio_vsock_pkt *pkt;
+		struct sk_buff *pkt;
 		unsigned int len;
 
 		virtqueue_disable_cb(vq);
 		while ((pkt = virtqueue_get_buf(vq, &len)) != NULL) {
-			virtio_transport_free_pkt(pkt);
+			kfree_skb(pkt);
 			added = true;
 		}
 	} while (!virtqueue_enable_cb(vq));
 
-out:
-	mutex_unlock(&vsock->tx_lock);
-
-	if (added)
-		queue_work(virtio_vsock_workqueue, &vsock->send_pkt_work);
+	spin_unlock_bh(&vsock->tx_spin_lock);
 }
 
 /* Is there space left for replies to rx packets? */
