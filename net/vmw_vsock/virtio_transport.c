@@ -76,15 +76,18 @@ struct virtio_vsock {
 };
 
 
+/**
+ * Must be called when tx_spin_lock is held.
+ */
 static void free_xmit_skbs(struct virtqueue *vq)
 {
-	(void)vq;
+	void *ptr;
+	unsigned int len;
 
-	/**
-	 * TODO: check that tx_spin_lock is held.
-	 * TODO: free skbs from vq.
-	 */
-	printk(KERN_ERR "%s: TODO: free skbs from vq\n", __func__);
+	while ((ptr = virtqueue_get_buf(vq, &len)) != NULL) {
+		struct sk_buff *skb = ptr;
+		consume_skb(skb);
+	}
 }
 
 static netdev_tx_t virtio_vsock_start_xmit(struct sk_buff *skb, struct net_device *dev)
