@@ -24,6 +24,7 @@
 #include <net/af_vsock.h>
 
 #define TRACE() trace_printk("%s:%d\n", __func__, __LINE__)
+#define MAX_SG (MAX_SKB_FRAGS + 2)
 
 static struct workqueue_struct *virtio_vsock_workqueue;
 static struct virtio_vsock __rcu *the_virtio_vsock;
@@ -45,7 +46,7 @@ struct virtio_vsock {
 	 */
 	spinlock_t tx_spin_lock;
 	/* TX: fragments + linear part of skb + vsock header */
-	struct scatterlist sg[MAX_SKB_FRAGS + 2];
+	struct scatterlist sg[MAX_SG];
 	struct mutex tx_lock;
 	bool tx_run;
 
@@ -131,10 +132,10 @@ static netdev_tx_t virtio_vsock_start_xmit(struct sk_buff *skb, struct net_devic
 	TRACE();
 
 	/* Stop the queue if running low on space, to avoid dropping future packets. */
-	if (vq->num_free < 2*MAX_SKB_FRAGS) {
+	if (vq->num_free < MAX_SG) {
 		netif_stop_subqueue(dev, qnum);
 		free_xmit_skbs(vq);
-		if (vq->num_free >= 2+MAX_SKB_FRAGS) {
+		if (vq->num_free >= MAX_SG) {
 			netif_start_subqueue(dev, qnum);
 			virtqueue_disable_cb(vq);
 		}
