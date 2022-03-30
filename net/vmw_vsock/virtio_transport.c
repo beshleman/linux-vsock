@@ -755,9 +755,9 @@ static int virtio_vsock_probe(struct virtio_device *vdev)
 	INIT_WORK(&vsock->tx_work, virtio_transport_tx_work);
 	INIT_WORK(&vsock->event_work, virtio_transport_event_work);
 
-	mutex_lock(&vsock->tx_lock);
+	spin_lock_bh(&vsock->tx_spin_lock);
 	vsock->tx_run = true;
-	mutex_unlock(&vsock->tx_lock);
+	spin_unlock_bh(&vsock->tx_spin_lock);
 
 	mutex_lock(&vsock->rx_lock);
 	virtio_vsock_rx_fill(vsock);
@@ -835,9 +835,9 @@ static void virtio_vsock_remove(struct virtio_device *vdev)
 	vsock->rx_run = false;
 	mutex_unlock(&vsock->rx_lock);
 
-	mutex_lock(&vsock->tx_lock);
+	spin_lock_bh(&vsock->tx_spin_lock);
 	vsock->tx_run = false;
-	mutex_unlock(&vsock->tx_lock);
+	spin_unlock_bh(&vsock->tx_spin_lock);
 
 	mutex_lock(&vsock->event_lock);
 	vsock->event_run = false;
