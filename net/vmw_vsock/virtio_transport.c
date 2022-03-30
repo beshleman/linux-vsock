@@ -48,7 +48,6 @@ struct virtio_vsock {
 	bool tx_run;
 
 
-	struct work_struct send_pkt_work;
 	spinlock_t send_pkt_list_lock;
 	struct list_head send_pkt_list;
 
@@ -755,7 +754,6 @@ static int virtio_vsock_probe(struct virtio_device *vdev)
 	INIT_WORK(&vsock->rx_work, virtio_transport_rx_work);
 	INIT_WORK(&vsock->tx_work, virtio_transport_tx_work);
 	INIT_WORK(&vsock->event_work, virtio_transport_event_work);
-	INIT_WORK(&vsock->send_pkt_work, virtio_transport_send_pkt_work);
 
 	mutex_lock(&vsock->tx_lock);
 	vsock->tx_run = true;
@@ -878,7 +876,6 @@ static void virtio_vsock_remove(struct virtio_device *vdev)
 	flush_work(&vsock->rx_work);
 	flush_work(&vsock->tx_work);
 	flush_work(&vsock->event_work);
-	flush_work(&vsock->send_pkt_work);
 
 	mutex_unlock(&the_virtio_vsock_mutex);
 
