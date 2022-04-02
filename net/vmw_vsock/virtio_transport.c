@@ -38,7 +38,7 @@ struct virtio_vsock {
 	/* The following fields are protected by tx_lock.  vqs[VSOCK_VQ_TX]
 	 * must be accessed with tx_lock held.
 	 */
-	struct mutex tx_lock;
+	spinlock_t tx_lock;
 	bool tx_run;
 
 	struct work_struct send_pkt_work;
@@ -93,7 +93,7 @@ virtio_transport_send_pkt_work(struct work_struct *work)
 	bool added = false;
 	bool restart_rx = false;
 
-	mutex_lock(&vsock->tx_lock);
+	spin_lock(&vsock->tx_lock);
 
 	if (!vsock->tx_run)
 		goto out;
@@ -157,7 +157,7 @@ virtio_transport_send_pkt_work(struct work_struct *work)
 		virtqueue_kick(vq);
 
 out:
-	mutex_unlock(&vsock->tx_lock);
+	spin_unlock(&vsock->tx_lock);
 
 	if (restart_rx)
 		queue_work(virtio_vsock_workqueue, &vsock->rx_work);
@@ -293,7 +293,7 @@ static void virtio_transport_tx_work(struct work_struct *work)
 	bool added = false;
 
 	vq = vsock->vqs[VSOCK_VQ_TX];
-	mutex_lock(&vsock->tx_lock);
+	spin_lock(&vsock->tx_lock);
 
 	if (!vsock->tx_run)
 		goto out;
@@ -310,7 +310,7 @@ static void virtio_transport_tx_work(struct work_struct *work)
 	} while (!virtqueue_enable_cb(vq));
 
 out:
-	mutex_unlock(&vsock->tx_lock);
+	spin_unlock(&vsock->tx_lock);
 
 	if (added)
 		queue_work(virtio_vsock_workqueue, &vsock->send_pkt_work);
@@ -612,7 +612,7 @@ static int virtio_vsock_probe(struct virtio_device *vdev)
 	vsock->rx_buf_max_nr = 0;
 	atomic_set(&vsock->queued_replies, 0);
 
-	mutex_init(&vsock->tx_lock);
+	spin_lock_init(&vsock->tx_lock);
 	mutex_init(&vsock->rx_lock);
 	mutex_init(&vsock->event_lock);
 	spin_lock_init(&vsock->send_pkt_list_lock);
@@ -622,9 +622,9 @@ static int virtio_vsock_probe(struct virtio_device *vdev)
 	INIT_WORK(&vsock->event_work, virtio_transport_event_work);
 	INIT_WORK(&vsock->send_pkt_work, virtio_transport_send_pkt_work);
 
-	mutex_lock(&vsock->tx_lock);
+	spin_lock(&vsock->tx_lock);
 	vsock->tx_run = true;
-	mutex_unlock(&vsock->tx_lock);
+	spin_unlock(&vsock->tx_lock);
 
 	mutex_lock(&vsock->rx_lock);
 	virtio_vsock_rx_fill(vsock);
@@ -674,9 +674,9 @@ static void virtio_vsock_remove(struct virtio_device *vdev)
 	vsock->rx_run = false;
 	mutex_unlock(&vsock->rx_lock);
 
-	mutex_lock(&vsock->tx_lock);
+	spin_lock(&vsock->tx_lock);
 	vsock->tx_run = false;
-	mutex_unlock(&vsock->tx_lock);
+	spin_unlock(&vsock->tx_lock);
 
 	mutex_lock(&vsock->event_lock);
 	vsock->event_run = false;
@@ -692,10 +692,10 @@ static void virtio_vsock_remove(struct virtio_device *vdev)
 		virtio_transport_free_pkt(pkt);
 	mutex_unlock(&vsock->rx_lock);
 
-	mutex_lock(&vsock->tx_lock);
+	spin_lock(&vsock->tx_lock);
 	while ((pkt = virtqueue_detach_unused_buf(vsock->vqs[VSOCK_VQ_TX])))
 		virtio_transport_free_pkt(pkt);
-	mutex_unlock(&vsock->tx_lock);
+	spin_unlock(&vsock->tx_lock);
 
 	spin_lock_bh(&vsock->send_pkt_list_lock);
 	while (!list_empty(&vsock->send_pkt_list)) {
