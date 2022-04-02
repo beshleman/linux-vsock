@@ -39,18 +39,27 @@ struct virtio_vsock_sock {
 	u32 msg_count;
 };
 
+/* This structure is packed to avoid affecting the alignment of the sk_buff used to transmit it */
 struct virtio_vsock_pkt {
-	struct virtio_vsock_hdr	hdr;
 	struct list_head list;
 	/* socket refcnt not held, only use for cancellation */
 	struct vsock_sock *vsk;
 	void *buf;
+
+	/* The skb used to transmit the packet */
+	struct sk_buff *skb;
 	u32 buf_len;
 	u32 len;
 	u32 off;
 	bool reply;
 	bool tap_delivered;
-};
+
+	/*
+	 * hdr MUST be the last element, as the buffer follows directly in the skb.
+	 * That is, &pkt->hdr is the start address of a valid, spec-compliant packet.
+	 */
+	struct virtio_vsock_hdr	hdr;
+} __attribute__((packed));
 
 struct virtio_vsock_pkt_info {
 	u32 remote_cid, remote_port;
