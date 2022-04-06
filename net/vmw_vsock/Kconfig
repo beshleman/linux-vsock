@@ -65,6 +65,7 @@ config VIRTIO_VSOCKETS
 
 config VIRTIO_VSOCKETS_COMMON
 	tristate
+	select VIRTIO_NETDEV_COMMON
 	help
 	  This option is selected by any driver which needs to access
 	  the virtio_vsock.  The module will be called

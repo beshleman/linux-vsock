@@ -17,9 +17,11 @@
 #include <linux/virtio_ids.h>
 #include <linux/virtio_config.h>
 #include <linux/virtio_vsock.h>
+#include <net/pkt_sched.h>
 #include <net/sock.h>
 #include <linux/mutex.h>
 #include <net/af_vsock.h>
+#include <net/virtio_netdev_common.h>
 
 static struct workqueue_struct *virtio_vsock_workqueue;
 static struct virtio_vsock __rcu *the_virtio_vsock;
@@ -28,6 +30,7 @@ static struct virtio_transport virtio_transport; /* forward declaration */
 
 struct virtio_vsock {
 	struct virtio_device *vdev;
+	struct net_device *dev;
 	struct virtqueue *vqs[VSOCK_VQ_MAX];
 
 	/* Virtqueue processing is deferred to a workqueue */
@@ -168,6 +171,9 @@ virtio_transport_send_pkt(struct virtio_vsock_pkt *pkt)
 {
 	struct virtio_vsock *vsock;
 	int len = pkt->len;
+	int err;
+
+	WARN_ON(!pkt->skb);
 
 	rcu_read_lock();
 	vsock = rcu_dereference(the_virtio_vsock);
@@ -186,11 +192,13 @@ virtio_transport_send_pkt(struct virtio_vsock_pkt *pkt)
 	if (pkt->reply)
 		atomic_inc(&vsock->queued_replies);
 
-	spin_lock_bh(&vsock->send_pkt_list_lock);
-	list_add_tail(&pkt->list, &vsock->send_pkt_list);
-	spin_unlock_bh(&vsock->send_pkt_list_lock);
-
-	queue_work(virtio_vsock_workqueue, &vsock->send_pkt_work);
+	dev_hold(vsock->dev);
+	pkt->skb->dev = vsock->dev;
+	err = dev_queue_xmit(pkt->skb);
+	if (err) {
+		len = -ENODEV;
+	}
+	dev_put(vsock->dev);
 
 out_rcu:
 	rcu_read_unlock();
@@ -303,17 +311,18 @@ static void virtio_transport_tx_work(struct work_struct *work)
 		unsigned int len;
 
 		virtqueue_disable_cb(vq);
-		while ((pkt = virtqueue_get_buf(vq, &len)) != NULL) {
-			virtio_transport_free_pkt(pkt);
+		while ((ptr = virtqueue_get_buf(vq, &len)) != NULL) {
+			struct sk_buff *skb = ptr;
+			consume_skb(skb);
 			added = true;
 		}
 	} while (!virtqueue_enable_cb(vq));
 
+	if (added)
+		netif_wake_queue(vsock->dev);
+
 out:
 	spin_unlock(&vsock->tx_lock);
-
-	if (added)
-		queue_work(virtio_vsock_workqueue, &vsock->send_pkt_work);
 }
 
 /* Is there space left for replies to rx packets? */
@@ -566,6 +575,140 @@ out:
 	mutex_unlock(&vsock->rx_lock);
 }
 
+static bool virtio_vsock_skb_is_reply(struct sk_buff *skb)
+{
+	struct virtio_vsock_pkt *pkt = (struct virtio_vsock_pkt*)skb->head;
+	return pkt->reply;
+}
+
+static void free_old_xmit_skbs(void *p, bool in_napi)
+{
+	void *ptr;
+	unsigned int len;
+	struct virtio_vsock *vsock;
+	struct virtqueue *vq;
+
+	rcu_read_lock();
+	vsock = rcu_dereference(the_virtio_vsock);
+	vq = vsock->vqs[VSOCK_VQ_TX];
+
+	while ((ptr = virtqueue_get_buf(vq, &len)) != NULL) {
+		struct sk_buff *skb = ptr;
+		consume_skb(skb);
+	}
+	rcu_read_unlock();
+}
+
+static int xmit_skb(void *virtio_netdev_common_info, struct sk_buff *skb)
+{
+	struct scatterlist sg;
+	struct virtio_vsock *vsock;
+	struct virtqueue *vq;
+	int ret;
+
+	rcu_read_lock();
+	vsock = rcu_dereference(the_virtio_vsock);
+	/* Move skb->data to point to the begining of the header */
+	vq = vsock->vqs[VSOCK_VQ_TX];
+	skb_pull(skb, VSOCK_HDR_OFFSET);
+
+	WARN_ON((void*)skb->data != (void*)&((struct virtio_vsock_pkt *)skb->head)->hdr);
+
+	sg_init_one(&sg, skb->data, skb->len);
+	ret = virtqueue_add_outbuf(vq, &sg, 1, skb, GFP_ATOMIC);
+	rcu_read_unlock();
+
+	return ret;
+}
+
+static netdev_tx_t virtio_vsock_start_xmit(struct sk_buff *skb, struct net_device *dev)
+{
+	struct virtio_netdev_common_info info;
+	bool reply = virtio_vsock_skb_is_reply(skb);
+	bool restart_rx = false;
+	struct virtio_vsock *vsock;
+	struct virtqueue *vq;
+	int ret = NETDEV_TX_BUSY;
+
+	rcu_read_lock();
+	vsock = rcu_dereference(the_virtio_vsock);
+	/* TODO: return NETDEV_TX_BUSY? */
+	if (!vsock)
+		return ret;
+
+	spin_lock_bh(&vsock->tx_lock);
+
+	if (!vsock->tx_run)
+		goto out;
+
+	/* TODO: support virtio_transport_deliver_tap_pkt(pkt) */
+	vq = vsock->vqs[VSOCK_VQ_TX];
+
+	info.priv = vsock;
+	info.vq = vq;
+	info.xmit_skb = xmit_skb;
+	info.free_old_xmit_skbs = free_old_xmit_skbs;
+	info.update_stats = NULL;
+	info.use_napi = false;
+
+	ret = virtio_netdev_common_start_xmit(&info, skb, dev);
+	if (unlikely(ret)) {
+		/*
+		 * This should never happen because we attempt to free buffer
+		 * space when the queue becomes full. If it does, we're
+		 * probably not managing the queue properly or the device is
+		 * not using buffers normally. Reset skb with skb_push() for
+		 * later transmission.
+		 */
+		goto out;
+	}
+
+
+	if (reply) {
+		struct virtqueue *rx_vq = vsock->vqs[VSOCK_VQ_RX];
+		int val;
+
+		val = atomic_dec_return(&vsock->queued_replies);
+
+		/* Do we now have resources to resume rx processing? */
+		if (val + 1 == virtqueue_get_vring_size(rx_vq))
+			restart_rx = true;
+	}
+
+out:
+	rcu_read_unlock();
+	spin_unlock_bh(&vsock->tx_lock);
+
+	if (restart_rx)
+		queue_work(virtio_vsock_workqueue, &vsock->rx_work);
+
+	return ret;
+}
+
+const struct net_device_ops virtio_vsock_netdev_ops = {
+	.ndo_start_xmit = virtio_vsock_start_xmit,
+};
+
+static void virtio_vsock_setup(struct net_device *dev)
+{
+	dev->netdev_ops = &virtio_vsock_netdev_ops;
+	dev->needs_free_netdev = true;
+	dev->flags = IFF_NOARP;
+	dev->mtu = VIRTIO_VSOCK_MAX_PKT_BUF_SIZE;
+	dev->tx_queue_len = DEFAULT_TX_QUEUE_LEN;
+}
+
+static int ifup(struct net_device *dev)
+{
+	int ret;
+
+	rtnl_lock();
+	ret = dev_open(dev, NULL) ? -ENOMEM: 0;
+	rtnl_unlock();
+
+	return ret;
+}
+
 static int virtio_vsock_probe(struct virtio_device *vdev)
 {
 	vq_callback_t *callbacks[] = {
@@ -573,6 +716,7 @@ static int virtio_vsock_probe(struct virtio_device *vdev)
 		virtio_vsock_tx_done,
 		virtio_vsock_event_done,
 	};
+	struct net_device *dev;
 	static const char * const names[] = {
 		"rx",
 		"tx",
@@ -639,12 +783,36 @@ static int virtio_vsock_probe(struct virtio_device *vdev)
 	if (virtio_has_feature(vdev, VIRTIO_VSOCK_F_SEQPACKET))
 		vsock->seqpacket_allow = true;
 
+	dev = alloc_netdev(0, "vvsk", NET_NAME_UNKNOWN, virtio_vsock_setup);
+	if (!dev) {
+		ret = -ENOMEM;
+		goto out;
+	}
+	vsock->dev = dev;
+	SET_NETDEV_DEV(dev, &vdev->dev);
+
+	ret = register_netdev(dev);
+	if (ret < 0)
+		goto out_free_netdev;
+
 	vdev->priv = vsock;
+
+
+	ret = ifup(dev);
+	if (ret < 0)
+		goto out_unregister_netdev;
+
 	rcu_assign_pointer(the_virtio_vsock, vsock);
 
 	mutex_unlock(&the_virtio_vsock_mutex);
 
 	return 0;
+
+out_unregister_netdev:
+	unregister_netdev(dev);
+
+out_free_netdev:
+	kfree(dev);
 
 out:
 	kfree(vsock);
@@ -717,8 +885,10 @@ static void virtio_vsock_remove(struct virtio_device *vdev)
 	flush_work(&vsock->event_work);
 	flush_work(&vsock->send_pkt_work);
 
-	mutex_unlock(&the_virtio_vsock_mutex);
+	unregister_netdev(vsock->dev);
+	kfree(vsock->dev);
 
+	mutex_unlock(&the_virtio_vsock_mutex);
 	kfree(vsock);
 }
 

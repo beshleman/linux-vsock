@@ -61,6 +61,8 @@ struct virtio_vsock_pkt {
 	struct virtio_vsock_hdr	hdr;
 } __attribute__((packed));
 
+#define VSOCK_HDR_OFFSET (offsetof(struct virtio_vsock_pkt, hdr))
+
 struct virtio_vsock_pkt_info {
 	u32 remote_cid, remote_port;
 	struct vsock_sock *vsk;
