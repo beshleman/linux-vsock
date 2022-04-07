@@ -412,9 +412,17 @@ config VIRTIO_NET
 	tristate "Virtio network driver"
 	depends on VIRTIO
 	select NET_FAILOVER
+	select VIRTIO_NETDEV_COMMON
 	help
 	  This is the virtual network driver for virtio.  It can be used with
 	  QEMU based VMMs (like KVM or Xen).  Say Y or M.
+
+config VIRTIO_NETDEV_COMMON
+	tristate "Virtio network device common code"
+	depends on VIRTIO
+	help
+	  This is common code used across network device drivers that use
+	  virtio and virtio virtqueues.
 
 config NLMON
 	tristate "Virtual netlink monitoring device"

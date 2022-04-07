@@ -22,6 +22,7 @@
 #include <net/route.h>
 #include <net/xdp.h>
 #include <net/net_failover.h>
+#include <net/virtio_netdev_common.h>
 
 static int napi_weight = NAPI_POLL_WEIGHT;
 module_param(napi_weight, int, 0444);
@@ -1503,6 +1504,12 @@ static void free_old_xmit_skbs(struct send_queue *sq, bool in_napi)
 	u64_stats_update_end(&sq->stats.syncp);
 }
 
+static void free_old_xmit_skbs_cb(void *virtio_netdev_common_info_priv, bool in_napi)
+{
+	struct send_queue *sq = virtio_netdev_common_info_priv;
+	free_old_xmit_skbs(sq, in_napi);
+}
+
 static bool is_xdp_raw_buffer_queue(struct virtnet_info *vi, int q)
 {
 	if (q < (vi->curr_queue_pairs - vi->xdp_queue_pairs))
@@ -1644,8 +1651,9 @@ static int virtnet_poll_tx(struct napi_struct *napi, int budget)
 	return 0;
 }
 
-static int xmit_skb(struct send_queue *sq, struct sk_buff *skb)
+static int xmit_skb(void *virtio_netdev_common_priv, struct sk_buff *skb)
 {
+	struct send_queue *sq = virtio_netdev_common_priv;
 	struct virtio_net_hdr_mrg_rxbuf *hdr;
 	const unsigned char *dest = ((struct ethhdr *)skb->data)->h_dest;
 	struct virtnet_info *vi = sq->vq->vdev->priv;
@@ -1691,82 +1699,31 @@ static int xmit_skb(struct send_queue *sq, struct sk_buff *skb)
 	return virtqueue_add_outbuf(sq->vq, sq->sg, num_sg, skb, GFP_ATOMIC);
 }
 
+void update_stats(void *virtio_netdev_common_info_priv)
+{
+	struct send_queue *sq = virtio_netdev_common_info_priv;
+
+	u64_stats_update_begin(&sq->stats.syncp);
+	sq->stats.kicks++;
+	u64_stats_update_end(&sq->stats.syncp);
+}
+
 static netdev_tx_t start_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	struct virtnet_info *vi = netdev_priv(dev);
 	int qnum = skb_get_queue_mapping(skb);
 	struct send_queue *sq = &vi->sq[qnum];
-	int err;
-	struct netdev_queue *txq = netdev_get_tx_queue(dev, qnum);
-	bool kick = !netdev_xmit_more();
-	bool use_napi = sq->napi.weight;
 
-	/* Free up any pending old buffers before queueing new ones. */
-	do {
-		if (use_napi)
-			virtqueue_disable_cb(sq->vq);
+	struct virtio_netdev_common_info info = {
+		.priv = sq,
+		.vq = sq->vq,
+		.xmit_skb = xmit_skb,
+		.free_old_xmit_skbs = free_old_xmit_skbs_cb,
+		.update_stats = update_stats,
+		.use_napi = sq->napi.weight,
+	};
 
-		free_old_xmit_skbs(sq, false);
-
-	} while (use_napi && kick &&
-	       unlikely(!virtqueue_enable_cb_delayed(sq->vq)));
-
-	/* timestamp packet in software */
-	skb_tx_timestamp(skb);
-
-	/* Try to transmit */
-	err = xmit_skb(sq, skb);
-
-	/* This should not happen! */
-	if (unlikely(err)) {
-		dev->stats.tx_fifo_errors++;
-		if (net_ratelimit())
-			dev_warn(&dev->dev,
-				 "Unexpected TXQ (%d) queue failure: %d\n",
-				 qnum, err);
-		dev->stats.tx_dropped++;
-		dev_kfree_skb_any(skb);
-		return NETDEV_TX_OK;
-	}
-
-	/* Don't wait up for transmitted skbs to be freed. */
-	if (!use_napi) {
-		skb_orphan(skb);
-		nf_reset_ct(skb);
-	}
-
-	/* If running out of space, stop queue to avoid getting packets that we
-	 * are then unable to transmit.
-	 * An alternative would be to force queuing layer to requeue the skb by
-	 * returning NETDEV_TX_BUSY. However, NETDEV_TX_BUSY should not be
-	 * returned in a normal path of operation: it means that driver is not
-	 * maintaining the TX queue stop/start state properly, and causes
-	 * the stack to do a non-trivial amount of useless work.
-	 * Since most packets only take 1 or 2 ring slots, stopping the queue
-	 * early means 16 slots are typically wasted.
-	 */
-	if (sq->vq->num_free < 2+MAX_SKB_FRAGS) {
-		netif_stop_subqueue(dev, qnum);
-		if (!use_napi &&
-		    unlikely(!virtqueue_enable_cb_delayed(sq->vq))) {
-			/* More just got used, free them then recheck. */
-			free_old_xmit_skbs(sq, false);
-			if (sq->vq->num_free >= 2+MAX_SKB_FRAGS) {
-				netif_start_subqueue(dev, qnum);
-				virtqueue_disable_cb(sq->vq);
-			}
-		}
-	}
-
-	if (kick || netif_xmit_stopped(txq)) {
-		if (virtqueue_kick_prepare(sq->vq) && virtqueue_notify(sq->vq)) {
-			u64_stats_update_begin(&sq->stats.syncp);
-			sq->stats.kicks++;
-			u64_stats_update_end(&sq->stats.syncp);
-		}
-	}
-
-	return NETDEV_TX_OK;
+	return virtio_netdev_common_start_xmit(&info, skb, dev);
 }
 
 /*
