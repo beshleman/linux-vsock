@@ -44,10 +44,6 @@ struct virtio_vsock {
 	spinlock_t tx_lock;
 	bool tx_run;
 
-	struct work_struct send_pkt_work;
-	spinlock_t send_pkt_list_lock;
-	struct list_head send_pkt_list;
-
 	atomic_t queued_replies;
 
 	/* The following fields are protected by rx_lock.  vqs[VSOCK_VQ_RX]
@@ -87,85 +83,6 @@ out_rcu:
 	return ret;
 }
 
-static void
-virtio_transport_send_pkt_work(struct work_struct *work)
-{
-	struct virtio_vsock *vsock =
-		container_of(work, struct virtio_vsock, send_pkt_work);
-	struct virtqueue *vq;
-	bool added = false;
-	bool restart_rx = false;
-
-	spin_lock(&vsock->tx_lock);
-
-	if (!vsock->tx_run)
-		goto out;
-
-	vq = vsock->vqs[VSOCK_VQ_TX];
-
-	for (;;) {
-		struct virtio_vsock_pkt *pkt;
-		struct scatterlist hdr, buf, *sgs[2];
-		int ret, in_sg = 0, out_sg = 0;
-		bool reply;
-
-		spin_lock_bh(&vsock->send_pkt_list_lock);
-		if (list_empty(&vsock->send_pkt_list)) {
-			spin_unlock_bh(&vsock->send_pkt_list_lock);
-			break;
-		}
-
-		pkt = list_first_entry(&vsock->send_pkt_list,
-				       struct virtio_vsock_pkt, list);
-		list_del_init(&pkt->list);
-		spin_unlock_bh(&vsock->send_pkt_list_lock);
-
-		virtio_transport_deliver_tap_pkt(pkt);
-
-		reply = pkt->reply;
-
-		sg_init_one(&hdr, &pkt->hdr, sizeof(pkt->hdr));
-		sgs[out_sg++] = &hdr;
-		if (pkt->buf) {
-			sg_init_one(&buf, pkt->buf, pkt->len);
-			sgs[out_sg++] = &buf;
-		}
-
-		ret = virtqueue_add_sgs(vq, sgs, out_sg, in_sg, pkt, GFP_KERNEL);
-		/* Usually this means that there is no more space available in
-		 * the vq
-		 */
-		if (ret < 0) {
-			spin_lock_bh(&vsock->send_pkt_list_lock);
-			list_add(&pkt->list, &vsock->send_pkt_list);
-			spin_unlock_bh(&vsock->send_pkt_list_lock);
-			break;
-		}
-
-		if (reply) {
-			struct virtqueue *rx_vq = vsock->vqs[VSOCK_VQ_RX];
-			int val;
-
-			val = atomic_dec_return(&vsock->queued_replies);
-
-			/* Do we now have resources to resume rx processing? */
-			if (val + 1 == virtqueue_get_vring_size(rx_vq))
-				restart_rx = true;
-		}
-
-		added = true;
-	}
-
-	if (added)
-		virtqueue_kick(vq);
-
-out:
-	spin_unlock(&vsock->tx_lock);
-
-	if (restart_rx)
-		queue_work(virtio_vsock_workqueue, &vsock->rx_work);
-}
-
 static int
 virtio_transport_send_pkt(struct virtio_vsock_pkt *pkt)
 {
@@ -203,53 +120,6 @@ virtio_transport_send_pkt(struct virtio_vsock_pkt *pkt)
 out_rcu:
 	rcu_read_unlock();
 	return len;
-}
-
-static int
-virtio_transport_cancel_pkt(struct vsock_sock *vsk)
-{
-	struct virtio_vsock *vsock;
-	struct virtio_vsock_pkt *pkt, *n;
-	int cnt = 0, ret;
-	LIST_HEAD(freeme);
-
-	rcu_read_lock();
-	vsock = rcu_dereference(the_virtio_vsock);
-	if (!vsock) {
-		ret = -ENODEV;
-		goto out_rcu;
-	}
-
-	spin_lock_bh(&vsock->send_pkt_list_lock);
-	list_for_each_entry_safe(pkt, n, &vsock->send_pkt_list, list) {
-		if (pkt->vsk != vsk)
-			continue;
-		list_move(&pkt->list, &freeme);
-	}
-	spin_unlock_bh(&vsock->send_pkt_list_lock);
-
-	list_for_each_entry_safe(pkt, n, &freeme, list) {
-		if (pkt->reply)
-			cnt++;
-		list_del(&pkt->list);
-		virtio_transport_free_pkt(pkt);
-	}
-
-	if (cnt) {
-		struct virtqueue *rx_vq = vsock->vqs[VSOCK_VQ_RX];
-		int new_cnt;
-
-		new_cnt = atomic_sub_return(cnt, &vsock->queued_replies);
-		if (new_cnt + cnt >= virtqueue_get_vring_size(rx_vq) &&
-		    new_cnt < virtqueue_get_vring_size(rx_vq))
-			queue_work(virtio_vsock_workqueue, &vsock->rx_work);
-	}
-
-	ret = 0;
-
-out_rcu:
-	rcu_read_unlock();
-	return ret;
 }
 
 static void virtio_vsock_rx_fill(struct virtio_vsock *vsock)
@@ -307,12 +177,11 @@ static void virtio_transport_tx_work(struct work_struct *work)
 		goto out;
 
 	do {
-		struct virtio_vsock_pkt *pkt;
+		struct sk_buff *skb;
 		unsigned int len;
 
 		virtqueue_disable_cb(vq);
-		while ((ptr = virtqueue_get_buf(vq, &len)) != NULL) {
-			struct sk_buff *skb = ptr;
+		while ((skb = virtqueue_get_buf(vq, &len)) != NULL) {
 			consume_skb(skb);
 			added = true;
 		}
@@ -471,7 +340,6 @@ static struct virtio_transport virtio_transport = {
 		.release                  = virtio_transport_release,
 		.connect                  = virtio_transport_connect,
 		.shutdown                 = virtio_transport_shutdown,
-		.cancel_pkt               = virtio_transport_cancel_pkt,
 
 		.dgram_bind               = virtio_transport_dgram_bind,
 		.dgram_dequeue            = virtio_transport_dgram_dequeue,
@@ -759,12 +627,9 @@ static int virtio_vsock_probe(struct virtio_device *vdev)
 	spin_lock_init(&vsock->tx_lock);
 	mutex_init(&vsock->rx_lock);
 	mutex_init(&vsock->event_lock);
-	spin_lock_init(&vsock->send_pkt_list_lock);
-	INIT_LIST_HEAD(&vsock->send_pkt_list);
 	INIT_WORK(&vsock->rx_work, virtio_transport_rx_work);
 	INIT_WORK(&vsock->tx_work, virtio_transport_tx_work);
 	INIT_WORK(&vsock->event_work, virtio_transport_event_work);
-	INIT_WORK(&vsock->send_pkt_work, virtio_transport_send_pkt_work);
 
 	spin_lock(&vsock->tx_lock);
 	vsock->tx_run = true;
@@ -865,15 +730,6 @@ static void virtio_vsock_remove(struct virtio_device *vdev)
 		virtio_transport_free_pkt(pkt);
 	spin_unlock(&vsock->tx_lock);
 
-	spin_lock_bh(&vsock->send_pkt_list_lock);
-	while (!list_empty(&vsock->send_pkt_list)) {
-		pkt = list_first_entry(&vsock->send_pkt_list,
-				       struct virtio_vsock_pkt, list);
-		list_del(&pkt->list);
-		virtio_transport_free_pkt(pkt);
-	}
-	spin_unlock_bh(&vsock->send_pkt_list_lock);
-
 	/* Delete virtqueues and flush outstanding callbacks if any */
 	vdev->config->del_vqs(vdev);
 
@@ -883,7 +739,6 @@ static void virtio_vsock_remove(struct virtio_device *vdev)
 	flush_work(&vsock->rx_work);
 	flush_work(&vsock->tx_work);
 	flush_work(&vsock->event_work);
-	flush_work(&vsock->send_pkt_work);
 
 	unregister_netdev(vsock->dev);
 	kfree(vsock->dev);
