@@ -33,6 +33,9 @@ struct virtio_vsock {
 	struct net_device *dev;
 	struct virtqueue *vqs[VSOCK_VQ_MAX];
 
+	/* For virtio_netdev_common */
+	struct virtio_netdev_common_info info;
+
 	/* Virtqueue processing is deferred to a workqueue */
 	struct work_struct tx_work;
 	struct work_struct rx_work;
@@ -491,7 +494,6 @@ static int xmit_skb(void *virtio_netdev_common_info, struct sk_buff *skb)
 
 static netdev_tx_t virtio_vsock_start_xmit(struct sk_buff *skb, struct net_device *dev)
 {
-	struct virtio_netdev_common_info info;
 	bool reply = virtio_vsock_skb_is_reply(skb);
 	bool restart_rx = false;
 	struct virtio_vsock *vsock;
@@ -512,14 +514,7 @@ static netdev_tx_t virtio_vsock_start_xmit(struct sk_buff *skb, struct net_devic
 	/* TODO: support virtio_transport_deliver_tap_pkt(pkt) */
 	vq = vsock->vqs[VSOCK_VQ_TX];
 
-	info.priv = vsock;
-	info.vq = vq;
-	info.xmit_skb = xmit_skb;
-	info.free_old_xmit_skbs = free_old_xmit_skbs;
-	info.update_stats = NULL;
-	info.use_napi = false;
-
-	ret = virtio_netdev_common_start_xmit(&info, skb, dev);
+	ret = virtio_netdev_common_start_xmit(&vsock->info, skb, dev);
 	if (unlikely(ret)) {
 		/*
 		 * This should never happen because we attempt to free buffer
@@ -655,6 +650,13 @@ static int virtio_vsock_probe(struct virtio_device *vdev)
 	}
 	vsock->dev = dev;
 	SET_NETDEV_DEV(dev, &vdev->dev);
+
+	vsock->info.priv = vsock;
+	vsock->info.vq = vsock->vqs[VSOCK_VQ_TX];
+	vsock->info.xmit_skb = xmit_skb;
+	vsock->info.free_old_xmit_skbs = free_old_xmit_skbs;
+	vsock->info.update_stats = NULL;
+	vsock->info.use_napi = false;
 
 	ret = register_netdev(dev);
 	if (ret < 0)
