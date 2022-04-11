@@ -4,27 +4,33 @@
 #include <net/virtio_netdev_common.h>
 
 netdev_tx_t
-virtio_netdev_common_start_xmit(struct virtio_netdev_common_info *info, struct sk_buff *skb, struct net_device *dev)
+virtio_netdev_common_start_xmit(struct virtio_netdev_common_ops *ops, void *priv, struct sk_buff *skb, struct net_device *dev)
 {
-	struct virtqueue *vq = info->vq;
+	struct virtqueue *vq = NULL;
 	int qnum = skb_get_queue_mapping(skb);
 	struct netdev_queue *txq = netdev_get_tx_queue(dev, qnum);
 	bool kick = !netdev_xmit_more();
-	bool use_napi = info->use_napi;
 	int err;
+	bool use_napi;
+
+	vq = ops->get_virtqueue(priv, skb);
+	if (!vq)
+		return NETDEV_TX_BUSY;
+
+	use_napi = ops->use_napi ? ops->use_napi(priv, skb) : false;
 
 	/* The caller forgot to set the required methods */
-	BUG_ON(!info->free_old_xmit_skbs || !info->xmit_skb);
+	BUG_ON(!ops->free_old_xmit_skbs || !ops->xmit_skb);
 
 	/* Free up any pending old buffers before queueing new ones. */
 	do {
 		if (use_napi)
 			virtqueue_disable_cb(vq);
 
-		if (!info->free_old_xmit_skbs)
+		if (!ops->free_old_xmit_skbs)
 			return NETDEV_TX_BUSY;
 
-		info->free_old_xmit_skbs(info->priv, false);
+		ops->free_old_xmit_skbs(priv, qnum, false);
 
 	} while (use_napi && kick &&
 	       unlikely(!virtqueue_enable_cb_delayed(vq)));
@@ -33,7 +39,7 @@ virtio_netdev_common_start_xmit(struct virtio_netdev_common_info *info, struct s
 	skb_tx_timestamp(skb);
 
 	/* Try to transmit */
-	err = info->xmit_skb(info->priv, skb);
+	err = ops->xmit_skb(priv, skb);
 
 	/* This should not happen! */
 	if (unlikely(err)) {
@@ -68,7 +74,7 @@ virtio_netdev_common_start_xmit(struct virtio_netdev_common_info *info, struct s
 		if (!use_napi &&
 		    unlikely(!virtqueue_enable_cb_delayed(vq))) {
 			/* More just got used, free them then recheck. */
-			info->free_old_xmit_skbs(info->priv, false);
+			ops->free_old_xmit_skbs(priv, qnum, false);
 			if (vq->num_free >= 2+MAX_SKB_FRAGS) {
 				netif_start_subqueue(dev, qnum);
 				virtqueue_disable_cb(vq);
@@ -78,8 +84,8 @@ virtio_netdev_common_start_xmit(struct virtio_netdev_common_info *info, struct s
 
 	if (kick || netif_xmit_stopped(txq)) {
 		if (virtqueue_kick_prepare(vq) && virtqueue_notify(vq)) {
-			if (info->update_stats) {
-				info->update_stats(info->priv);
+			if (ops->update_stats) {
+				ops->update_stats(priv);
 			}
 		}
 	}
