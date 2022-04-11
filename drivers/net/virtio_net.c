@@ -187,6 +187,7 @@ struct virtnet_info {
 	struct net_device *dev;
 	struct send_queue *sq;
 	struct receive_queue *rq;
+	struct virtio_netdev_common_ops *common_ops;
 	unsigned int status;
 
 	/* Max # of queue pairs supported by the device */
@@ -1504,9 +1505,11 @@ static void free_old_xmit_skbs(struct send_queue *sq, bool in_napi)
 	u64_stats_update_end(&sq->stats.syncp);
 }
 
-static void free_old_xmit_skbs_cb(void *virtio_netdev_common_info_priv, bool in_napi)
+static void free_old_xmit_skbs_cb(void *priv, int qnum, bool in_napi)
 {
-	struct send_queue *sq = virtio_netdev_common_info_priv;
+	struct virtnet_info *vi = priv;
+	struct send_queue *sq = &vi->sq[qnum];
+
 	free_old_xmit_skbs(sq, in_napi);
 }
 
@@ -1651,12 +1654,13 @@ static int virtnet_poll_tx(struct napi_struct *napi, int budget)
 	return 0;
 }
 
-static int xmit_skb(void *virtio_netdev_common_priv, struct sk_buff *skb)
+static int xmit_skb(void *priv, struct sk_buff *skb)
 {
-	struct send_queue *sq = virtio_netdev_common_priv;
+	struct virtnet_info *vi = priv;
+	int qnum = skb_get_queue_mapping(skb);
+	struct send_queue *sq = &vi->sq[qnum];
 	struct virtio_net_hdr_mrg_rxbuf *hdr;
 	const unsigned char *dest = ((struct ethhdr *)skb->data)->h_dest;
-	struct virtnet_info *vi = sq->vq->vdev->priv;
 	int num_sg;
 	unsigned hdr_len = vi->hdr_len;
 	bool can_push;
@@ -1699,31 +1703,45 @@ static int xmit_skb(void *virtio_netdev_common_priv, struct sk_buff *skb)
 	return virtqueue_add_outbuf(sq->vq, sq->sg, num_sg, skb, GFP_ATOMIC);
 }
 
-void update_stats(void *virtio_netdev_common_info_priv)
+void update_stats(void *priv)
 {
-	struct send_queue *sq = virtio_netdev_common_info_priv;
+	struct send_queue *sq = priv;
 
 	u64_stats_update_begin(&sq->stats.syncp);
 	sq->stats.kicks++;
 	u64_stats_update_end(&sq->stats.syncp);
 }
 
+bool use_napi(void *priv, struct sk_buff *skb)
+{
+	struct virtnet_info *vi = priv;
+	int qnum = skb_get_queue_mapping(skb);
+	struct send_queue *sq = &vi->sq[qnum];
+	return sq->napi.weight;
+}
+
+static struct virtqueue *get_virtqueue(void *priv, struct sk_buff *skb)
+{
+	struct virtnet_info *vi = priv;
+	int qnum = skb_get_queue_mapping(skb);
+	struct send_queue *sq = &vi->sq[qnum];
+	struct virtqueue *vq = sq->vq;
+
+	return vq;
+}
+
+static struct virtio_netdev_common_ops common_ops = {
+	.xmit_skb = xmit_skb,
+	.free_old_xmit_skbs = free_old_xmit_skbs_cb,
+	.update_stats = update_stats,
+	.use_napi = use_napi,
+	.get_virtqueue = get_virtqueue,
+};
+
 static netdev_tx_t start_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	struct virtnet_info *vi = netdev_priv(dev);
-	int qnum = skb_get_queue_mapping(skb);
-	struct send_queue *sq = &vi->sq[qnum];
-
-	struct virtio_netdev_common_info info = {
-		.priv = sq,
-		.vq = sq->vq,
-		.xmit_skb = xmit_skb,
-		.free_old_xmit_skbs = free_old_xmit_skbs_cb,
-		.update_stats = update_stats,
-		.use_napi = sq->napi.weight,
-	};
-
-	return virtio_netdev_common_start_xmit(&info, skb, dev);
+	return virtio_netdev_common_start_xmit(vi->common_ops, vi, skb, dev);
 }
 
 /*
@@ -3150,6 +3168,8 @@ static int virtnet_probe(struct virtio_device *vdev)
 	vi->dev = dev;
 	vi->vdev = vdev;
 	vdev->priv = vi;
+
+	vi->common_ops = &common_ops;
 
 	INIT_WORK(&vi->config_work, virtnet_config_changed_work);
 
