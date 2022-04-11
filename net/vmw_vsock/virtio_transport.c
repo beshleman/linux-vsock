@@ -34,7 +34,7 @@ struct virtio_vsock {
 	struct virtqueue *vqs[VSOCK_VQ_MAX];
 
 	/* For virtio_netdev_common */
-	struct virtio_netdev_common_info info;
+	struct virtio_netdev_common_ops *common_ops;
 
 	/* Virtqueue processing is deferred to a workqueue */
 	struct work_struct tx_work;
@@ -171,7 +171,6 @@ static void virtio_transport_tx_work(struct work_struct *work)
 	struct virtio_vsock *vsock =
 		container_of(work, struct virtio_vsock, tx_work);
 	struct virtqueue *vq;
-	bool added = false;
 
 	vq = vsock->vqs[VSOCK_VQ_TX];
 	spin_lock(&vsock->tx_lock);
@@ -179,19 +178,7 @@ static void virtio_transport_tx_work(struct work_struct *work)
 	if (!vsock->tx_run)
 		goto out;
 
-	do {
-		struct sk_buff *skb;
-		unsigned int len;
-
-		virtqueue_disable_cb(vq);
-		while ((skb = virtqueue_get_buf(vq, &len)) != NULL) {
-			consume_skb(skb);
-			added = true;
-		}
-	} while (!virtqueue_enable_cb(vq));
-
-	if (added)
-		netif_wake_queue(vsock->dev);
+	netif_wake_queue(vsock->dev);
 
 out:
 	spin_unlock(&vsock->tx_lock);
@@ -452,7 +439,7 @@ static bool virtio_vsock_skb_is_reply(struct sk_buff *skb)
 	return pkt->reply;
 }
 
-static void free_old_xmit_skbs(void *p, bool in_napi)
+static void free_old_xmit_skbs(void *p, int qnum, bool in_napi)
 {
 	void *ptr;
 	unsigned int len;
@@ -470,7 +457,7 @@ static void free_old_xmit_skbs(void *p, bool in_napi)
 	rcu_read_unlock();
 }
 
-static int xmit_skb(void *virtio_netdev_common_info, struct sk_buff *skb)
+static int xmit_skb(void *priv, struct sk_buff *skb)
 {
 	struct scatterlist sg;
 	struct virtio_vsock *vsock;
@@ -514,7 +501,7 @@ static netdev_tx_t virtio_vsock_start_xmit(struct sk_buff *skb, struct net_devic
 	/* TODO: support virtio_transport_deliver_tap_pkt(pkt) */
 	vq = vsock->vqs[VSOCK_VQ_TX];
 
-	ret = virtio_netdev_common_start_xmit(&vsock->info, skb, dev);
+	ret = virtio_netdev_common_start_xmit(vsock->common_ops, vsock, skb, dev);
 	if (unlikely(ret)) {
 		/*
 		 * This should never happen because we attempt to free buffer
@@ -571,6 +558,25 @@ static int ifup(struct net_device *dev)
 
 	return ret;
 }
+
+static bool never_use_napi(void *priv, struct sk_buff *skb)
+{
+	return false;
+}
+
+static struct virtqueue *get_virtqueue(void *priv, struct sk_buff *skb)
+{
+	struct virtio_vsock *vsock = priv;
+	return vsock->vqs[VSOCK_VQ_TX];
+}
+
+static struct virtio_netdev_common_ops common_ops = {
+	.xmit_skb = xmit_skb,
+	.free_old_xmit_skbs = free_old_xmit_skbs,
+	.update_stats = NULL,
+	.use_napi = never_use_napi,
+	.get_virtqueue = get_virtqueue,
+};
 
 static int virtio_vsock_probe(struct virtio_device *vdev)
 {
@@ -651,19 +657,13 @@ static int virtio_vsock_probe(struct virtio_device *vdev)
 	vsock->dev = dev;
 	SET_NETDEV_DEV(dev, &vdev->dev);
 
-	vsock->info.priv = vsock;
-	vsock->info.vq = vsock->vqs[VSOCK_VQ_TX];
-	vsock->info.xmit_skb = xmit_skb;
-	vsock->info.free_old_xmit_skbs = free_old_xmit_skbs;
-	vsock->info.update_stats = NULL;
-	vsock->info.use_napi = false;
+	vsock->common_ops = &common_ops;
 
 	ret = register_netdev(dev);
 	if (ret < 0)
 		goto out_free_netdev;
 
 	vdev->priv = vsock;
-
 
 	ret = ifup(dev);
 	if (ret < 0)
