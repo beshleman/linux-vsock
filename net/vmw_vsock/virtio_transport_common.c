@@ -103,6 +103,8 @@ virtio_transport_alloc_pkt(struct virtio_vsock_pkt_info *info,
 					 info->op,
 					 info->flags);
 
+	BUG_ON((void*)pkt != (void*)skb->head);
+
 	return pkt;
 
 out:
