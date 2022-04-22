@@ -16,6 +16,7 @@
 
 #include <net/sock.h>
 #include <net/af_vsock.h>
+#include <net/pkt_sched.h>
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/vsock_virtio_transport_common.h>
@@ -25,6 +26,89 @@
 
 /* Threshold for detecting small packets to copy */
 #define GOOD_COPY_LEN  128
+
+struct virtio_transport_priv {
+	struct virtio_transport *trans;
+};
+
+static netdev_tx_t virtio_transport_start_xmit(struct sk_buff *skb, struct net_device *dev)
+{
+	struct virtio_transport *t = ((struct virtio_transport_priv *)netdev_priv(dev))->trans;
+	struct virtio_vsock_pkt *pkt = (struct virtio_vsock_pkt *)skb->head;
+
+	return likely(t->send_pkt(pkt) == pkt->len) ? NETDEV_TX_OK : NETDEV_TX_BUSY;
+}
+
+const struct net_device_ops virtio_transport_netdev_ops = {
+	.ndo_start_xmit = virtio_transport_start_xmit,
+};
+
+static void virtio_transport_setup(struct net_device *dev)
+{
+	dev->netdev_ops = &virtio_transport_netdev_ops;
+	dev->needs_free_netdev = true;
+	dev->flags = IFF_NOARP;
+	dev->mtu = VIRTIO_VSOCK_MAX_PKT_BUF_SIZE;
+	dev->tx_queue_len = DEFAULT_TX_QUEUE_LEN;
+}
+
+static int ifup(struct net_device *dev)
+{
+	int ret;
+
+	rtnl_lock();
+	ret = dev_open(dev, NULL) ? -ENOMEM : 0;
+	rtnl_unlock();
+
+	return ret;
+}
+
+/*
+ * virtio_transport_init - initialize a virtio vsock transport layer
+ *
+ * @t: ptr to the virtio transport struct to initialize
+ * @name: the name of the net_device to be created.
+ *
+ * Return 0 on success, otherwise negative errno.
+ */
+int virtio_transport_init(struct virtio_transport *t, const char *name)
+{
+	struct virtio_transport_priv *priv;
+	int ret;
+
+	t->dev = alloc_netdev(sizeof(*priv), name, NET_NAME_UNKNOWN, virtio_transport_setup);
+	if (!t->dev)
+		return -ENOMEM;
+
+	priv = netdev_priv(t->dev);
+	priv->trans = t;
+
+	ret = register_netdev(t->dev);
+	if (ret < 0)
+		goto out_free_netdev;
+
+	ret = ifup(t->dev);
+	if (ret < 0)
+		goto out_unregister_netdev;
+
+	return 0;
+
+out_unregister_netdev:
+	unregister_netdev(t->dev);
+
+out_free_netdev:
+	kfree(t->dev);
+
+	return ret;
+}
+
+void virtio_transport_exit(struct virtio_transport *t)
+{
+	if (t->dev) {
+		unregister_netdev(t->dev);
+		kfree(t->dev);
+	}
+}
 
 static const struct virtio_transport *
 virtio_transport_get_ops(struct vsock_sock *vsk)
@@ -190,6 +274,36 @@ static u16 virtio_transport_get_type(struct sock *sk)
 		return VIRTIO_VSOCK_TYPE_SEQPACKET;
 }
 
+/* Return pkt->len on success, otherwise negative errno */
+static int virtio_transport_send_pkt(const struct virtio_transport *t, struct virtio_vsock_pkt *pkt)
+{
+	int ret;
+
+	if (unlikely(!t->dev))
+		return t->send_pkt(pkt);
+
+	/*
+	 * To prevent the networking stack from freeing this skb before
+	 * start_xmit() is able to place it on the virtqueue, grab an
+	 * additional reference.
+	 *
+	 * Only when both the networking stack and send_pkt() function have
+	 * both decremented the refcount w/ kfree_skb() will the refcount reach
+	 * zero and will the skb be freed.
+	 */
+	skb_get(pkt->skb);
+
+	dev_hold(t->dev);
+	pkt->skb->dev = t->dev;
+	ret = dev_queue_xmit(pkt->skb);
+	dev_put(t->dev);
+
+	if (likely(ret == NET_XMIT_SUCCESS || ret == NET_XMIT_CN))
+		return pkt->len;
+
+	return net_xmit_errno(ret);
+}
+
 /* This function can only be used on connecting/connected sockets,
  * since a socket assigned to a transport is required.
  *
@@ -243,7 +357,7 @@ static int virtio_transport_send_pkt_info(struct vsock_sock *vsk,
 
 	virtio_transport_inc_tx_pkt(vvs, pkt);
 
-	return t_ops->send_pkt(pkt);
+	return virtio_transport_send_pkt(t_ops, pkt);
 }
 
 static bool virtio_transport_inc_rx_pkt(struct virtio_vsock_sock *vvs,
@@ -863,7 +977,7 @@ static int virtio_transport_reset_no_sock(const struct virtio_transport *t,
 		return -ENOTCONN;
 	}
 
-	return t->send_pkt(reply);
+	return virtio_transport_send_pkt(t, reply);
 }
 
 /* This function should be called with sk_lock held and SOCK_DONE set */

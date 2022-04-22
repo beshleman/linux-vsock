@@ -965,13 +965,30 @@ static int __init vhost_vsock_init(void)
 				  VSOCK_TRANSPORT_F_H2G);
 	if (ret < 0)
 		return ret;
-	return misc_register(&vhost_vsock_misc);
+
+	ret = virtio_transport_init(&vhost_transport, "vhost-vsock");
+	if (ret < 0)
+		goto out_unregister;
+
+	ret = misc_register(&vhost_vsock_misc);
+	if (ret < 0)
+		goto out_transport_exit;
+	return ret;
+
+out_transport_exit:
+	virtio_transport_exit(&vhost_transport);
+
+out_unregister:
+	vsock_core_unregister(&vhost_transport.transport);
+	return ret;
+
 };
 
 static void __exit vhost_vsock_exit(void)
 {
 	misc_deregister(&vhost_vsock_misc);
 	vsock_core_unregister(&vhost_transport.transport);
+	virtio_transport_exit(&vhost_transport);
 };
 
 module_init(vhost_vsock_init);
