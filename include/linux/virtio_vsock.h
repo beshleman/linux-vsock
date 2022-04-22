@@ -76,6 +76,9 @@ struct virtio_transport {
 	/* This must be the first field */
 	struct vsock_transport transport;
 
+	/* Used almost exclusively for qdisc */
+	struct net_device *dev;
+
 	/* Takes ownership of the packet */
 	int (*send_pkt)(struct virtio_vsock_pkt *pkt);
 };
