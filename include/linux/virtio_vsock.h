@@ -83,6 +83,13 @@ struct virtio_transport {
 	int (*send_pkt)(struct virtio_vsock_pkt *pkt);
 };
 
+int
+virtio_transport_init(struct virtio_transport *t,
+		      const char *name);
+
+void
+virtio_transport_exit(struct virtio_transport *t);
+
 ssize_t
 virtio_transport_stream_dequeue(struct vsock_sock *vsk,
 				struct msghdr *msg,
