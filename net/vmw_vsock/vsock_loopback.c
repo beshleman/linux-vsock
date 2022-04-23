@@ -151,8 +151,8 @@ static int __init vsock_loopback_init(void)
 	INIT_LIST_HEAD(&vsock->pkt_list);
 	INIT_WORK(&vsock->pkt_work, vsock_loopback_work);
 
-	ret = vsock_core_register(&loopback_transport.transport,
-				  VSOCK_TRANSPORT_F_LOCAL);
+	ret = virtio_transport_init(&loopback_transport, "",
+				    VSOCK_TRANSPORT_F_LOCAL, false);
 	if (ret)
 		goto out_wq;
 
@@ -168,7 +168,7 @@ static void __exit vsock_loopback_exit(void)
 	struct vsock_loopback *vsock = &the_vsock_loopback;
 	struct virtio_vsock_pkt *pkt;
 
-	vsock_core_unregister(&loopback_transport.transport);
+	virtio_transport_exit(&loopback_transport);
 
 	flush_work(&vsock->pkt_work);
 
