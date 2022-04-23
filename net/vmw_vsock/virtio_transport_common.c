@@ -67,18 +67,31 @@ static int ifup(struct net_device *dev)
  * virtio_transport_init - initialize a virtio vsock transport layer
  *
  * @t: ptr to the virtio transport struct to initialize
- * @name: the name of the net_device to be created.
+ * @name: the name of the net_device to be created. Unused if !use_dev.
+ * @features: vsock transport features
+ * @use_dev: If true, create a net_device for the transport layer. Otherwise, set t->dev to NULL.
  *
  * Return 0 on success, otherwise negative errno.
  */
-int virtio_transport_init(struct virtio_transport *t, const char *name)
+int virtio_transport_init(struct virtio_transport *t, const char *name, int features, bool use_dev)
 {
 	struct virtio_transport_priv *priv;
 	int ret;
 
+	ret = vsock_core_register(&t->transport, features);
+	if (ret < 0)
+		return ret;
+
+	if (!use_dev) {
+		t->dev = NULL;
+		return 0;
+	}
+
 	t->dev = alloc_netdev(sizeof(*priv), name, NET_NAME_UNKNOWN, virtio_transport_setup);
-	if (!t->dev)
-		return -ENOMEM;
+	if (!t->dev) {
+		ret = -ENOMEM;
+		goto out_unregister_core;
+	}
 
 	priv = netdev_priv(t->dev);
 	priv->trans = t;
@@ -99,6 +112,9 @@ out_unregister_netdev:
 out_free_netdev:
 	kfree(t->dev);
 
+out_unregister_core:
+	vsock_core_unregister(&t->transport);
+
 	return ret;
 }
 
@@ -108,6 +124,7 @@ void virtio_transport_exit(struct virtio_transport *t)
 		unregister_netdev(t->dev);
 		kfree(t->dev);
 	}
+	vsock_core_unregister(&t->transport);
 }
 
 static const struct virtio_transport *

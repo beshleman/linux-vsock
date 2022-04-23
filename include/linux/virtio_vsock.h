@@ -88,7 +88,9 @@ struct virtio_transport {
 
 int
 virtio_transport_init(struct virtio_transport *t,
-		      const char *name);
+		      const char *name,
+		      int features,
+		      bool use_dev);
 
 void
 virtio_transport_exit(struct virtio_transport *t);
