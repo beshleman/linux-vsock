@@ -82,7 +82,11 @@ struct virtio_transport {
 	/* Used almost exclusively for qdisc */
 	struct net_device *dev;
 
-	/* Takes ownership of the packet */
+	/*
+	 * Return length of pkt on success, else negative errno.
+	 *
+	 * Takes ownership of the packet.
+	 */
 	int (*send_pkt)(struct virtio_vsock_pkt *pkt);
 };
 
