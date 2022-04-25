@@ -1351,12 +1351,8 @@ EXPORT_SYMBOL_GPL(virtio_transport_recv_pkt);
 
 void virtio_transport_free_pkt(struct virtio_vsock_pkt *pkt)
 {
-	if (pkt->skb) {
-		kfree_skb(pkt->skb);
-	} else {
-		kfree(pkt->buf);
-		kfree(pkt);
-	}
+	/* pkt is contained within pkt->skb, so only free pkt->skb */
+	kfree_skb(pkt->skb);
 }
 EXPORT_SYMBOL_GPL(virtio_transport_free_pkt);
 
