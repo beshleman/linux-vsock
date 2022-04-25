@@ -357,6 +357,7 @@ vhost_vsock_alloc_pkt(struct vhost_virtqueue *vq,
 		      unsigned int out, unsigned int in)
 {
 	struct virtio_vsock_pkt *pkt;
+	struct sk_buff *skb;
 	struct iov_iter iov_iter;
 	size_t nbytes;
 	size_t len;
@@ -366,18 +367,23 @@ vhost_vsock_alloc_pkt(struct vhost_virtqueue *vq,
 		return NULL;
 	}
 
-	pkt = kzalloc(sizeof(*pkt), GFP_KERNEL);
-	if (!pkt)
+	len = iov_length(vq->iov, out);
+
+	skb = alloc_skb(sizeof(*pkt) + len, GFP_KERNEL);
+	if (!skb)
 		return NULL;
 
-	len = iov_length(vq->iov, out);
+	memset(skb->head, 0, skb->end - skb->tail);
+
+	pkt = virtio_transport_build_pkt(skb, 0);
+
 	iov_iter_init(&iov_iter, WRITE, vq->iov, out, len);
 
 	nbytes = copy_from_iter(&pkt->hdr, sizeof(pkt->hdr), &iov_iter);
 	if (nbytes != sizeof(pkt->hdr)) {
 		vq_err(vq, "Expected %zu bytes for pkt->hdr, got %zu bytes\n",
 		       sizeof(pkt->hdr), nbytes);
-		kfree(pkt);
+		kfree_skb(skb);
 		return NULL;
 	}
 
@@ -389,16 +395,11 @@ vhost_vsock_alloc_pkt(struct vhost_virtqueue *vq,
 
 	/* The pkt is too big */
 	if (pkt->len > VIRTIO_VSOCK_MAX_PKT_BUF_SIZE) {
-		kfree(pkt);
+		kfree_skb(skb);
 		return NULL;
 	}
 
-	pkt->buf = kmalloc(pkt->len, GFP_KERNEL);
-	if (!pkt->buf) {
-		kfree(pkt);
-		return NULL;
-	}
-
+	pkt->buf = VIRTIO_VSOCK_PKT_BUF_ADDR(pkt);
 	pkt->buf_len = pkt->len;
 
 	nbytes = copy_from_iter(pkt->buf, pkt->len, &iov_iter);
