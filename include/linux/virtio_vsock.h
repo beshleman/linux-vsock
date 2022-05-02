@@ -40,7 +40,6 @@ struct virtio_vsock_sock {
 };
 
 struct virtio_vsock_pkt {
-	struct virtio_vsock_hdr	hdr;
 	struct list_head list;
 	/* socket refcnt not held, only use for cancellation */
 	struct vsock_sock *vsk;
@@ -50,6 +49,13 @@ struct virtio_vsock_pkt {
 	u32 off;
 	bool reply;
 	bool tap_delivered;
+
+	/*
+	 * Must be the last element. This allows hdr and buf to be contiguous
+	 * in memory by placing the buf immediately after the
+	 * virtio_vsock_pkt.
+	 */
+	struct virtio_vsock_hdr hdr;
 };
 
 struct virtio_vsock_pkt_info {
