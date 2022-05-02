@@ -44,6 +44,12 @@ struct virtio_vsock_pkt {
 	/* socket refcnt not held, only use for cancellation */
 	struct vsock_sock *vsk;
 	void *buf;
+
+	/*
+	 * The skb used to transmit/receive the packet. This skb encapsulates
+	 * all of struct virtio_vsock_pkt AND the payload (found at pkt->buf).
+	 */
+	struct sk_buff *skb;
 	u32 buf_len;
 	u32 len;
 	u32 off;
