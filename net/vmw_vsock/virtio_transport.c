@@ -29,6 +29,9 @@ struct virtio_vsock {
 	struct virtio_device *vdev;
 	struct virtqueue *vqs[VSOCK_VQ_MAX];
 
+	/* alloc_frag for allocation page fragements for the receive queue */
+	struct page *pages;
+
 	/* Virtqueue processing is deferred to a workqueue */
 	struct work_struct tx_work;
 	struct work_struct rx_work;
@@ -243,40 +246,73 @@ out_rcu:
 	return ret;
 }
 
+static struct page *get_a_page(struct virtio_vsock *vsock, gfp_t gfp_mask)
+{
+	struct page *p = vsock->pages;
+
+	if (p) {
+		vsock->pages = (struct page *)p->private;
+		/* clear private here, it is used to chain pages */
+		p->private = 0;
+	} else
+		p = alloc_page(gfp_mask);
+	return p;
+}
+
+static void give_pages(struct virtio_vsock *vsock, struct page *page)
+{
+	struct page *end;
+
+	for (end = page; end->private; end = (struct page *)end->private);
+	end->private = (unsigned long)vsock->pages;
+	vsock->pages = page;
+}
+
 static void virtio_vsock_rx_fill(struct virtio_vsock *vsock)
 {
-	int buf_len = VIRTIO_VSOCK_DEFAULT_RX_BUF_SIZE;
+	int buf_len = VIRTIO_VSOCK_DEFAULT_RX_BUF_SIZE - sizeof(*pkt);
 	struct virtio_vsock_pkt *pkt;
 	struct scatterlist hdr, buf, *sgs[2];
 	struct virtqueue *vq;
 	int ret;
 
+	/* TODO: should virtio vsock default rx buf size simply be PAGE_SIZE? */
+	BUILD_BUG_ON(VIRTIO_VSOCK_DEFAULT_RX_BUF_SIZE != PAGE_SIZE);
+
 	vq = vsock->vqs[VSOCK_VQ_RX];
 
 	do {
-		pkt = kzalloc(sizeof(*pkt), GFP_KERNEL);
-		if (!pkt)
-			break;
+		struct page *first, *list = NULL;
+		char *p;
 
-		pkt->buf = kmalloc(buf_len, GFP_KERNEL);
-		if (!pkt->buf) {
-			virtio_transport_free_pkt(pkt);
+		first = get_a_page(vsock, GFP_KERNEL | __GFP_ZERO);
+		if (!first) {
+			give_pages(vsock, list);
 			break;
 		}
 
 		pkt->buf_len = buf_len;
 		pkt->len = buf_len;
 
+		/* pkt, hdr, and buf share the same page */
+		p = page_address(first);
+		pkt = (struct virtio_vsock_pkt*)p;
+		pkt->buf = p + sizeof(*pkt);
+
 		sg_init_one(&hdr, &pkt->hdr, sizeof(pkt->hdr));
 		sgs[0] = &hdr;
 
 		sg_init_one(&buf, pkt->buf, buf_len);
 		sgs[1] = &buf;
+
+		/* chain first in list head */
+		first->private = (unsigned long)list;
 		ret = virtqueue_add_sgs(vq, sgs, 0, 2, pkt, GFP_KERNEL);
-		if (ret) {
-			virtio_transport_free_pkt(pkt);
+		if (ret < 0) {
+			give_pages(vsock, first);
 			break;
 		}
+
 		vsock->rx_buf_nr++;
 	} while (vq->num_free);
 	if (vsock->rx_buf_nr > vsock->rx_buf_max_nr)
@@ -524,7 +560,9 @@ static void virtio_transport_rx_work(struct work_struct *work)
 	do {
 		virtqueue_disable_cb(vq);
 		for (;;) {
+			void *buf;
 			struct virtio_vsock_pkt *pkt;
+			struct sk_buff *skb;
 			unsigned int len;
 
 			if (!virtio_transport_more_replies(vsock)) {
@@ -535,10 +573,21 @@ static void virtio_transport_rx_work(struct work_struct *work)
 				goto out;
 			}
 
-			pkt = virtqueue_get_buf(vq, &len);
-			if (!pkt) {
+			buf = virtqueue_get_buf(vq, &len);
+			if (!buf) {
 				break;
 			}
+
+			skb = build_skb(buf, len);
+			if (!skb) {
+				break;
+			}
+
+			/* TODO: should len actually be based off of the virtqueue size?
+			 * Doesn't this make the pkt len roughly PAGE_SIZE, when it really should be
+			 * derived from pkt->hdr.len?? or simply len - sizeof(*pkt) ?
+			 */
+			pkt = virtio_transport_build_pkt(skb, len - sizeof(*pkt));
 
 			vsock->rx_buf_nr--;
 
