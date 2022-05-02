@@ -168,4 +168,29 @@ u32 virtio_transport_get_credit(struct virtio_vsock_sock *vvs, u32 wanted);
 void virtio_transport_put_credit(struct virtio_vsock_sock *vvs, u32 credit);
 void virtio_transport_deliver_tap_pkt(struct virtio_vsock_pkt *pkt);
 
+#define VIRTIO_VSOCK_PKT_BUF_ADDR(pkt) (((void*)pkt) + sizeof(*pkt))
+
+static inline struct virtio_vsock_pkt *
+virtio_transport_build_pkt(struct sk_buff *skb, unsigned int len)
+{
+	struct virtio_vsock_pkt *pkt;
+
+	pkt = (struct virtio_vsock_pkt*)skb->head;
+	pkt->skb = skb;
+
+	/* skb->data == &pkt->hdr */
+	skb_reserve(pkt->skb, offsetof(struct virtio_vsock_pkt, hdr));
+
+	if (len > 0) {
+		pkt->buf = VIRTIO_VSOCK_PKT_BUF_ADDR(pkt);
+		pkt->buf_len = len;
+		pkt->len = len;
+	} else {
+		pkt->buf = NULL;
+		pkt->buf_len = 0;
+		pkt->len = 0;
+	}
+
+	return pkt;
+}
 #endif /* _LINUX_VIRTIO_VSOCK_H */
