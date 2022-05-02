@@ -46,12 +46,28 @@ virtio_transport_alloc_pkt(struct virtio_vsock_pkt_info *info,
 			   u32 dst_port)
 {
 	struct virtio_vsock_pkt *pkt;
+	struct sk_buff *skb;
 	int err;
 
-	pkt = kzalloc(sizeof(*pkt), GFP_KERNEL);
-	if (!pkt)
+	if (info->vsk) {
+		unsigned int msg_flags = info->msg ? info->msg->msg_flags : 0;
+		struct sock *sk;
+
+		sk = sk_vsock(info->vsk);
+		skb = sock_alloc_send_skb(sk, sizeof(*pkt) + len, msg_flags &
+					  MSG_DONTWAIT, &err);
+		if (skb)
+			skb->priority = sk->sk_priority;
+	} else {
+		skb = alloc_skb(sizeof(*pkt) + len, GFP_KERNEL);
+	}
+
+	if (skb == NULL)
 		return NULL;
 
+	memset(skb->head, 0, skb->end - skb->tail);
+
+	pkt = virtio_transport_build_pkt(skb, len);
 	pkt->hdr.type		= cpu_to_le16(info->type);
 	pkt->hdr.op		= cpu_to_le16(info->op);
 	pkt->hdr.src_cid	= cpu_to_le64(src_cid);
@@ -59,18 +75,11 @@ virtio_transport_alloc_pkt(struct virtio_vsock_pkt_info *info,
 	pkt->hdr.src_port	= cpu_to_le32(src_port);
 	pkt->hdr.dst_port	= cpu_to_le32(dst_port);
 	pkt->hdr.flags		= cpu_to_le32(info->flags);
-	pkt->len		= len;
 	pkt->hdr.len		= cpu_to_le32(len);
 	pkt->reply		= info->reply;
 	pkt->vsk		= info->vsk;
 
 	if (info->msg && len > 0) {
-		pkt->buf = kmalloc(len, GFP_KERNEL);
-		if (!pkt->buf)
-			goto out_pkt;
-
-		pkt->buf_len = len;
-
 		err = memcpy_from_msg(pkt->buf, info->msg, len);
 		if (err)
 			goto out;
@@ -87,12 +96,12 @@ virtio_transport_alloc_pkt(struct virtio_vsock_pkt_info *info,
 					 info->op,
 					 info->flags);
 
+	BUG_ON((void*)pkt != (void*)skb->head);
+
 	return pkt;
 
 out:
-	kfree(pkt->buf);
-out_pkt:
-	kfree(pkt);
+	kfree_skb(skb);
 	return NULL;
 }
 
@@ -1331,8 +1340,12 @@ EXPORT_SYMBOL_GPL(virtio_transport_recv_pkt);
 
 void virtio_transport_free_pkt(struct virtio_vsock_pkt *pkt)
 {
-	kfree(pkt->buf);
-	kfree(pkt);
+	if (pkt->skb) {
+		kfree_skb(pkt->skb);
+	} else {
+		kfree(pkt->buf);
+		kfree(pkt);
+	}
 }
 EXPORT_SYMBOL_GPL(virtio_transport_free_pkt);
 
