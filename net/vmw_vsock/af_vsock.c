@@ -1926,7 +1926,7 @@ static int vsock_connectible_wait_data(struct sock *sk,
 	if (err)
 		return err;
 
-	trace_printk("%s:%d: data=%d\n", __func__, __LINE__, data);
+	trace_printk("%s:%d: data=%llu\n", __func__, __LINE__, data);
 	/* Internal transport error when checking for available
 	 * data. XXX This should be changed to a connection
 	 * reset in a later change.
