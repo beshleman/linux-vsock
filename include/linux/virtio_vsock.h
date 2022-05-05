@@ -10,6 +10,7 @@
 #define VIRTIO_VSOCK_DEFAULT_RX_BUF_SIZE	(1024 * 4)
 #define VIRTIO_VSOCK_MAX_BUF_SIZE		0xFFFFFFFFUL
 #define VIRTIO_VSOCK_MAX_PKT_BUF_SIZE		(1024 * 64)
+#define VIRTIO_VSOCK_PKT_BUF_ADDR(pkt) (((void*)pkt) + sizeof(*pkt))
 
 enum {
 	VSOCK_VQ_RX     = 0, /* for host to guest data */
@@ -44,6 +45,12 @@ struct virtio_vsock_pkt {
 	/* socket refcnt not held, only use for cancellation */
 	struct vsock_sock *vsk;
 	void *buf;
+
+	/*
+	 * The skb used to transmit/receive the packet. This skb encapsulates
+	 * all of struct virtio_vsock_pkt AND the payload (found at pkt->buf).
+	 */
+	struct sk_buff *skb;
 	u32 buf_len;
 	u32 len;
 	u32 off;
@@ -161,5 +168,6 @@ void virtio_transport_inc_tx_pkt(struct virtio_vsock_sock *vvs, struct virtio_vs
 u32 virtio_transport_get_credit(struct virtio_vsock_sock *vvs, u32 wanted);
 void virtio_transport_put_credit(struct virtio_vsock_sock *vvs, u32 credit);
 void virtio_transport_deliver_tap_pkt(struct virtio_vsock_pkt *pkt);
+struct virtio_vsock_pkt *virtio_transport_build_pkt(struct sk_buff *skb, unsigned int len);
 
 #endif /* _LINUX_VIRTIO_VSOCK_H */

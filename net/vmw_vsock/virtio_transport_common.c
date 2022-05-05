@@ -1336,6 +1336,31 @@ void virtio_transport_free_pkt(struct virtio_vsock_pkt *pkt)
 }
 EXPORT_SYMBOL_GPL(virtio_transport_free_pkt);
 
+struct virtio_vsock_pkt *
+virtio_transport_build_pkt(struct sk_buff *skb, unsigned int len)
+{
+	struct virtio_vsock_pkt *pkt;
+
+	pkt = (struct virtio_vsock_pkt*)skb->head;
+	pkt->skb = skb;
+
+	/* skb->data == &pkt->hdr */
+	skb_reserve(pkt->skb, offsetof(struct virtio_vsock_pkt, hdr));
+
+	if (len > 0) {
+		pkt->buf = VIRTIO_VSOCK_PKT_BUF_ADDR(pkt);
+		pkt->buf_len = len;
+		pkt->len = len;
+	} else {
+		pkt->buf = NULL;
+		pkt->buf_len = 0;
+		pkt->len = 0;
+	}
+
+	return pkt;
+}
+EXPORT_SYMBOL_GPL(virtio_transport_build_pkt);
+
 MODULE_LICENSE("GPL v2");
 MODULE_AUTHOR("Asias He");
 MODULE_DESCRIPTION("common code for virtio vsock");
