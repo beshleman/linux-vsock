@@ -270,8 +270,8 @@ static void give_pages(struct virtio_vsock *vsock, struct page *page)
 
 static void virtio_vsock_rx_fill(struct virtio_vsock *vsock)
 {
-	int buf_len = VIRTIO_VSOCK_DEFAULT_RX_BUF_SIZE - sizeof(*pkt);
 	struct virtio_vsock_pkt *pkt;
+	int buf_len = VIRTIO_VSOCK_DEFAULT_RX_BUF_SIZE - sizeof(*pkt);
 	struct scatterlist hdr, buf, *sgs[2];
 	struct virtqueue *vq;
 	int ret;
