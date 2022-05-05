@@ -545,6 +545,8 @@ s64 virtio_transport_stream_has_data(struct vsock_sock *vsk)
 	bytes = vvs->rx_bytes;
 	spin_unlock_bh(&vvs->rx_lock);
 
+	trace_printk("bytes=%llu\n", bytes);
+
 	return bytes;
 }
 EXPORT_SYMBOL_GPL(virtio_transport_stream_has_data);

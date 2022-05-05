@@ -1883,6 +1883,7 @@ static int vsock_connectible_wait_data(struct sock *sk,
 	transport = vsk->transport;
 
 	while ((data = vsock_connectible_has_data(vsk)) == 0) {
+		trace_printk("in loop\n");
 		prepare_to_wait(sk_sleep(sk), wait, TASK_INTERRUPTIBLE);
 
 		if (sk->sk_err != 0 ||
@@ -1891,18 +1892,21 @@ static int vsock_connectible_wait_data(struct sock *sk,
 			break;
 		}
 
+		trace_printk("not waiting for non-blocking socket\n");
 		/* Don't wait for non-blocking sockets. */
 		if (timeout == 0) {
 			err = -EAGAIN;
 			break;
 		}
 
+		trace_printk("%s:%d\n", __func__, __LINE__);
 		if (recv_data) {
 			err = transport->notify_recv_pre_block(vsk, target, recv_data);
 			if (err < 0)
 				break;
 		}
 
+		trace_printk("%s:%d\n", __func__, __LINE__);
 		release_sock(sk);
 		timeout = schedule_timeout(timeout);
 		lock_sock(sk);
@@ -1916,11 +1920,13 @@ static int vsock_connectible_wait_data(struct sock *sk,
 		}
 	}
 
+	trace_printk("%s:%d\n", __func__, __LINE__);
 	finish_wait(sk_sleep(sk), wait);
 
 	if (err)
 		return err;
 
+	trace_printk("%s:%d\n", __func__, __LINE__);
 	/* Internal transport error when checking for available
 	 * data. XXX This should be changed to a connection
 	 * reset in a later change.
@@ -1928,6 +1934,7 @@ static int vsock_connectible_wait_data(struct sock *sk,
 	if (data < 0)
 		return -ENOMEM;
 
+	trace_printk("%s:%d\n", __func__, __LINE__);
 	return data;
 }
 
