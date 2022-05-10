@@ -592,7 +592,7 @@ static void virtio_transport_rx_work(struct work_struct *work)
 
 			/* Drop short/long packets */
 			if (unlikely(len < sizeof(pkt->hdr) ||
-				     len > VIRTIO_VSOCK_MAX_RX_HDR_PAYLOAD_SIZE) {
+				     len > VIRTIO_VSOCK_MAX_RX_HDR_PAYLOAD_SIZE)) {
 				virtio_transport_free_pkt(pkt);
 				continue;
 			}
