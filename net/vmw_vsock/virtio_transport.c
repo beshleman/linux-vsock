@@ -21,6 +21,9 @@
 #include <linux/mutex.h>
 #include <net/af_vsock.h>
 
+#define VIRTIO_VSOCK_MAX_RX_HDR_PAYLOAD_SIZE	\
+	(VIRTIO_VSOCK_DEFAULT_RX_BUF_SIZE - offsetof(struct virtio_vsock_pkt, hdr))
+
 static struct workqueue_struct *virtio_vsock_workqueue;
 static struct virtio_vsock __rcu *the_virtio_vsock;
 static DEFINE_MUTEX(the_virtio_vsock_mutex); /* protects the_virtio_vsock */
@@ -589,12 +592,11 @@ static void virtio_transport_rx_work(struct work_struct *work)
 
 			/* Drop short/long packets */
 			if (unlikely(len < sizeof(pkt->hdr) ||
-				     len > sizeof(pkt->hdr) + pkt->len)) {
+				     len > VIRTIO_VSOCK_MAX_RX_HDR_PAYLOAD_SIZE) {
 				virtio_transport_free_pkt(pkt);
 				continue;
 			}
 
-			pkt->len = len - sizeof(pkt->hdr);
 			virtio_transport_deliver_tap_pkt(pkt);
 			virtio_transport_recv_pkt(&virtio_transport, pkt);
 		}
