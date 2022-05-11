@@ -1854,6 +1854,7 @@ static int vsock_connectible_sendmsg(struct socket *sock, struct msghdr *msg,
 	}
 
 out_err:
+	trace_printk("err=%d, total_written=%zd\n", err, total_written);
 	if (total_written > 0) {
 		/* Return number of written bytes only if:
 		 * 1) SOCK_STREAM socket.
