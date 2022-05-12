@@ -1727,6 +1727,8 @@ static int vsock_connectible_sendmsg(struct socket *sock, struct msghdr *msg,
 	struct vsock_transport_send_notify_data send_data;
 	DEFINE_WAIT_FUNC(wait, woken_wake_function);
 
+	trace_printk("len=%zu\n", len);
+
 	sk = sock->sk;
 	vsk = vsock_sk(sk);
 	total_written = 0;
