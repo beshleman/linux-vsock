@@ -1484,12 +1484,19 @@ static struct socket *get_socket(int fd)
 	/* special case to disable backend */
 	if (fd == -1)
 		return NULL;
+
+	printk(KERN_ERR "%s: trying raw socket...\n", __func__);
+
 	sock = get_raw_socket(fd);
 	if (!IS_ERR(sock))
 		return sock;
+	printk(KERN_ERR "%s: not raw, trying tap socket...\n", __func__);
+
 	sock = get_tap_socket(fd);
 	if (!IS_ERR(sock))
 		return sock;
+
+	printk(KERN_ERR "%s: not tap, error...\n", __func__);
 	return ERR_PTR(-ENOTSOCK);
 }
 
