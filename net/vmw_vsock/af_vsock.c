@@ -1777,6 +1777,8 @@ static int vsock_connectible_sendmsg(struct socket *sock, struct msghdr *msg,
 	while (total_written < len) {
 		ssize_t written;
 
+		trace_printk("total_written (%d) < len (%d)\n", total_written, len);
+
 		add_wait_queue(sk_sleep(sk), &wait);
 		while (vsock_stream_has_space(vsk) == 0 &&
 		       sk->sk_err == 0 &&
