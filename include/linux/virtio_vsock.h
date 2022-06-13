@@ -4,8 +4,42 @@
 
 #include <uapi/linux/virtio_vsock.h>
 #include <linux/socket.h>
+#include <vdso/bits.h>
 #include <net/sock.h>
 #include <net/af_vsock.h>
+
+enum virtio_vsock_metadata_flags {
+	VIRTIO_VSOCK_METADATA_FLAGS_REPLY		= BIT(0),
+	VIRTIO_VSOCK_METADATA_FLAGS_TAP_DELIVERED	= BIT(1),
+};
+
+/* Used only by the virtio/vhost vsock drivers, not related to protocol */
+struct virtio_vsock_metadata {
+	size_t off;
+	enum virtio_vsock_metadata_flags flags;
+};
+
+#define vsock_hdr(skb) \
+	((struct virtio_vsock_hdr*) \
+	 ((void*)skb->head + sizeof(struct virtio_vsock_metadata)))
+
+#define vsock_metadata(skb) \
+	((struct virtio_vsock_metadata *)skb->head)
+
+#define virtio_vsock_skb_reserve(skb)	\
+	skb_reserve(skb,	\
+		sizeof(struct virtio_vsock_metadata) + \
+		sizeof(struct virtio_vsock_hdr))
+
+static inline void virtio_vsock_skb_rx_put(struct sk_buff *skb)
+{
+	u32 len;
+
+	len = le32_to_cpu(vsock_hdr(skb)->len);
+
+	if (len > 0)
+		skb_put(skb, len);
+}
 
 #define VIRTIO_VSOCK_DEFAULT_RX_BUF_SIZE	(1024 * 4)
 #define VIRTIO_VSOCK_MAX_BUF_SIZE		0xFFFFFFFFUL
@@ -35,21 +69,8 @@ struct virtio_vsock_sock {
 	u32 last_fwd_cnt;
 	u32 rx_bytes;
 	u32 buf_alloc;
-	struct list_head rx_queue;
+	struct sk_buff_head rx_queue;
 	u32 msg_count;
-};
-
-struct virtio_vsock_pkt {
-	struct virtio_vsock_hdr	hdr;
-	struct list_head list;
-	/* socket refcnt not held, only use for cancellation */
-	struct vsock_sock *vsk;
-	void *buf;
-	u32 buf_len;
-	u32 len;
-	u32 off;
-	bool reply;
-	bool tap_delivered;
 };
 
 struct virtio_vsock_pkt_info {
@@ -68,7 +89,7 @@ struct virtio_transport {
 	struct vsock_transport transport;
 
 	/* Takes ownership of the packet */
-	int (*send_pkt)(struct virtio_vsock_pkt *pkt);
+	int (*send_pkt)(struct sk_buff *skb);
 };
 
 ssize_t
@@ -149,11 +170,10 @@ virtio_transport_dgram_enqueue(struct vsock_sock *vsk,
 void virtio_transport_destruct(struct vsock_sock *vsk);
 
 void virtio_transport_recv_pkt(struct virtio_transport *t,
-			       struct virtio_vsock_pkt *pkt);
-void virtio_transport_free_pkt(struct virtio_vsock_pkt *pkt);
-void virtio_transport_inc_tx_pkt(struct virtio_vsock_sock *vvs, struct virtio_vsock_pkt *pkt);
+			       struct sk_buff *skb);
+void virtio_transport_inc_tx_pkt(struct virtio_vsock_sock *vvs, struct sk_buff *skb);
 u32 virtio_transport_get_credit(struct virtio_vsock_sock *vvs, u32 wanted);
 void virtio_transport_put_credit(struct virtio_vsock_sock *vvs, u32 credit);
-void virtio_transport_deliver_tap_pkt(struct virtio_vsock_pkt *pkt);
-
+void virtio_transport_deliver_tap_pkt(struct sk_buff *skb);
+int virtio_transport_remove_skbs(void *vsk, struct sk_buff_head *queue);
 #endif /* _LINUX_VIRTIO_VSOCK_H */

@@ -748,6 +748,7 @@ static struct sock *__vsock_create(struct net *net,
 	vsock_addr_init(&vsk->local_addr, VMADDR_CID_ANY, VMADDR_PORT_ANY);
 	vsock_addr_init(&vsk->remote_addr, VMADDR_CID_ANY, VMADDR_PORT_ANY);
 
+	sk->sk_allocation = GFP_KERNEL;
 	sk->sk_destruct = vsock_sk_destruct;
 	sk->sk_backlog_rcv = vsock_queue_rcv_skb;
 	sock_reset_flag(sk, SOCK_DONE);
