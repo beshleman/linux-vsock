@@ -8,6 +8,9 @@
 #include <net/sock.h>
 #include <net/af_vsock.h>
 
+/* Threshold for detecting small packets to copy */
+#define GOOD_COPY_LEN  128
+
 enum virtio_vsock_metadata_flags {
 	VIRTIO_VSOCK_METADATA_FLAGS_REPLY		= BIT(0),
 	VIRTIO_VSOCK_METADATA_FLAGS_TAP_DELIVERED	= BIT(1),

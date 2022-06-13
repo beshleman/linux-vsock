@@ -687,7 +687,7 @@ out:
 	if (bytes_written)
 		ret = bytes_written;
 	kfree(send_buf);
-	return ret;
+	return ret < 0 ? -ENOMEM : ret;
 }
 
 static s64 hvs_stream_has_data(struct vsock_sock *vsk)

@@ -23,9 +23,6 @@
 /* How long to wait for graceful shutdown of a connection */
 #define VSOCK_CLOSE_TIMEOUT (8 * HZ)
 
-/* Threshold for detecting small packets to copy */
-#define GOOD_COPY_LEN  128
-
 static const struct virtio_transport *
 virtio_transport_get_ops(struct vsock_sock *vsk)
 {

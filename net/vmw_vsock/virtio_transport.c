@@ -182,9 +182,9 @@ virtio_transport_skb_merge_new_into_old(struct sk_buff *old, struct sk_buff *new
 }
 
 static inline bool
-virtio_transport_skbs_can_merge(struct sk_buff *new, struct sk_buff *old)
+virtio_transport_skbs_can_merge(struct sk_buff *old, struct sk_buff *new)
 {
-	return skb_tailroom(new) > old->len && vsock_hdr(new)->op == VIRTIO_VSOCK_OP_RW;
+	return new->len < GOOD_COPY_LEN && skb_tailroom(old) > new->len && vsock_hdr(new)->op == VIRTIO_VSOCK_OP_RW;
 }
 
 static void
