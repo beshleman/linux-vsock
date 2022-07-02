@@ -554,7 +554,11 @@ static s64 virtio_transport_has_space(struct vsock_sock *vsk)
 s64 virtio_transport_stream_has_space(struct vsock_sock *vsk)
 {
 	struct virtio_vsock_sock *vvs = vsk->trans;
+	struct sock *sk = sk_vsock(vsk);
 	s64 bytes;
+
+	if (READ_ONCE(sk->sk_sndbuf) <= refcount_read(&sk->sk_wmem_alloc))
+		return 0;
 
 	spin_lock_bh(&vvs->tx_lock);
 	bytes = virtio_transport_has_space(vsk);
