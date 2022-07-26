@@ -773,7 +773,7 @@ static int __init virtio_vsock_init(void)
 		return -ENOMEM;
 
 	ret = vsock_core_register(&virtio_transport.transport,
-				  VSOCK_TRANSPORT_F_G2H);
+				  VSOCK_TRANSPORT_F_G2H | VSOCK_TRANSPORT_F_DGRAM);
 	if (ret)
 		goto out_wq;
 
