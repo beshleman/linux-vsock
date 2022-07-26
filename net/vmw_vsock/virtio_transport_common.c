@@ -37,6 +37,35 @@ virtio_transport_get_ops(struct vsock_sock *vsk)
 	return container_of(t, struct virtio_transport, transport);
 }
 
+/* Requires info->msg and info->vsk */
+static struct sk_buff *
+virtio_transport_sock_alloc_send_skb(struct virtio_vsock_pkt_info *info, unsigned int size,
+				     gfp_t mask, int *err)
+{
+	struct sk_buff *skb;
+	struct sock *sk;
+	int noblock;
+
+	if (size < VIRTIO_VSOCK_SKB_HEADROOM) {
+		*err = -EINVAL;
+		return NULL;
+	}
+
+	if (info->msg)
+		noblock = info->msg->msg_flags & MSG_DONTWAIT;
+	else
+		noblock = 1;
+
+	sk = sk_vsock(info->vsk);
+	sk->sk_allocation = mask;
+	skb = sock_alloc_send_skb(sk, size, noblock, err);
+	if (!skb)
+		return NULL;
+
+	skb_reserve(skb, VIRTIO_VSOCK_SKB_HEADROOM);
+	return skb;
+}
+
 /* Returns a new packet on success, otherwise returns NULL.
  *
  * If NULL is returned, errp is set to a negative errno.
@@ -47,7 +76,8 @@ virtio_transport_alloc_skb(struct virtio_vsock_pkt_info *info,
 			   u32 src_cid,
 			   u32 src_port,
 			   u32 dst_cid,
-			   u32 dst_port)
+			   u32 dst_port,
+			   int *errp)
 {
 	const size_t skb_len = VIRTIO_VSOCK_SKB_HEADROOM + len;
 	struct virtio_vsock_hdr *hdr;
@@ -55,9 +85,22 @@ virtio_transport_alloc_skb(struct virtio_vsock_pkt_info *info,
 	void *payload;
 	int err;
 
-	skb = virtio_vsock_alloc_skb(skb_len, GFP_KERNEL);
-	if (!skb)
+	/* Because dgrams do not use credits, they must throttle according to
+	 * sk_sndbuf using sock_alloc_send_skb.  This helps avoid triggering
+	 * the OOM.
+	 */
+	if (info->vsk && info->type == VIRTIO_VSOCK_TYPE_DGRAM) {
+		skb = virtio_transport_sock_alloc_send_skb(info, skb_len, GFP_KERNEL, &err);
+	} else {
+		skb = virtio_vsock_alloc_skb(skb_len, GFP_KERNEL);
+		if (!skb)
+			err = -ENOMEM;
+	}
+
+	if (!skb) {
+		*errp = err;
 		return NULL;
+	}
 
 	hdr = virtio_vsock_hdr(skb);
 	hdr->type	= cpu_to_le16(info->type);
@@ -97,6 +140,7 @@ virtio_transport_alloc_skb(struct virtio_vsock_pkt_info *info,
 	return skb;
 
 out:
+	*errp = err;
 	kfree_skb(skb);
 	return NULL;
 }
@@ -178,7 +222,9 @@ EXPORT_SYMBOL_GPL(virtio_transport_deliver_tap_pkt);
 
 static u16 virtio_transport_get_type(struct sock *sk)
 {
-	if (sk->sk_type == SOCK_STREAM)
+	if (sk->sk_type == SOCK_DGRAM)
+		return VIRTIO_VSOCK_TYPE_DGRAM;
+	else if (sk->sk_type == SOCK_STREAM)
 		return VIRTIO_VSOCK_TYPE_STREAM;
 	else
 		return VIRTIO_VSOCK_TYPE_SEQPACKET;
@@ -197,6 +243,7 @@ static int virtio_transport_send_pkt_info(struct vsock_sock *vsk,
 	struct virtio_vsock_sock *vvs;
 	u32 pkt_len = info->pkt_len;
 	struct sk_buff *skb;
+	int err;
 
 	info->type = virtio_transport_get_type(sk_vsock(vsk));
 
@@ -220,19 +267,12 @@ static int virtio_transport_send_pkt_info(struct vsock_sock *vsk,
 	if (pkt_len > VIRTIO_VSOCK_MAX_PKT_BUF_SIZE)
 		pkt_len = VIRTIO_VSOCK_MAX_PKT_BUF_SIZE;
 
-	/* virtio_transport_get_credit might return less than pkt_len credit */
-	pkt_len = virtio_transport_get_credit(vvs, pkt_len);
-
-	/* Do not send zero length OP_RW pkt */
-	if (pkt_len == 0 && info->op == VIRTIO_VSOCK_OP_RW)
-		return pkt_len;
-
 	skb = virtio_transport_alloc_skb(info, pkt_len,
 					 src_cid, src_port,
-					 dst_cid, dst_port);
+					 dst_cid, dst_port, &err);
 	if (!skb) {
 		virtio_transport_put_credit(vvs, pkt_len);
-		return -ENOMEM;
+		return err;
 	}
 
 	virtio_transport_inc_tx_pkt(vvs, skb);
@@ -541,7 +581,56 @@ virtio_transport_dgram_dequeue(struct vsock_sock *vsk,
 			       struct msghdr *msg,
 			       size_t len, int flags)
 {
-	return -EOPNOTSUPP;
+	struct sk_buff *skb;
+	struct sock *sk;
+	size_t bytes;
+	int err;
+
+	if (flags & MSG_OOB || flags & MSG_ERRQUEUE)
+		return -EOPNOTSUPP;
+
+	sk = sk_vsock(vsk);
+	err = 0;
+
+	skb = skb_recv_datagram(sk, flags, &err);
+	if (!skb)
+		goto out;
+
+	/* If the user buffer is too short then truncate the message and set
+	 * MSG_TRUNC. The remainder will be discarded when the skb is freed.
+	 */
+	if (len < skb->len) {
+		bytes = len;
+		msg->msg_flags |= MSG_TRUNC;
+	} else {
+		bytes = skb->len;
+	}
+
+	/* Copy to msg from skb->data.
+	 * virtio_vsock_alloc_skb() should have already set
+	 * the skb pointers correctly. That is, skb->data
+	 * should not still be at skb->head.
+	 */
+	WARN_ON(skb->data == skb->head);
+	err = skb_copy_datagram_msg(skb, 0, msg, bytes);
+	if (err)
+		goto out;
+
+	/* On success, return the number bytes copied to the user buffer */
+	err = bytes;
+
+	if (msg->msg_name) {
+		/* Provide the address of the sender. */
+		DECLARE_SOCKADDR(struct sockaddr_vm *, vm_addr, msg->msg_name);
+
+		vsock_addr_init(vm_addr, le64_to_cpu(virtio_vsock_hdr(skb)->src_cid),
+				le32_to_cpu(virtio_vsock_hdr(skb)->src_port));
+		msg->msg_namelen = sizeof(*vm_addr);
+	}
+
+out:
+	skb_free_datagram(&vsk->sk, skb);
+	return err;
 }
 EXPORT_SYMBOL_GPL(virtio_transport_dgram_dequeue);
 
@@ -746,13 +835,13 @@ EXPORT_SYMBOL_GPL(virtio_transport_stream_allow);
 int virtio_transport_dgram_bind(struct vsock_sock *vsk,
 				struct sockaddr_vm *addr)
 {
-	return -EOPNOTSUPP;
+	return vsock_bind_stream(vsk, addr);
 }
 EXPORT_SYMBOL_GPL(virtio_transport_dgram_bind);
 
 bool virtio_transport_dgram_allow(u32 cid, u32 port)
 {
-	return false;
+	return true;
 }
 EXPORT_SYMBOL_GPL(virtio_transport_dgram_allow);
 
@@ -788,7 +877,37 @@ virtio_transport_dgram_enqueue(struct vsock_sock *vsk,
 			       struct msghdr *msg,
 			       size_t dgram_len)
 {
-	return -EOPNOTSUPP;
+	struct virtio_vsock_pkt_info info = {
+		.op = VIRTIO_VSOCK_OP_RW,
+		.msg = msg,
+		.vsk = vsk,
+		.type = VIRTIO_VSOCK_TYPE_DGRAM,
+	};
+	const struct virtio_transport *t_ops;
+	u32 src_cid, src_port;
+	struct sk_buff *skb;
+	int err;
+
+	t_ops = virtio_transport_get_ops(vsk);
+	if (unlikely(!t_ops))
+		return -EFAULT;
+
+	src_cid = t_ops->transport.get_local_cid();
+	src_port = vsk->local_addr.svm_port;
+
+	if (dgram_len > VIRTIO_VSOCK_MAX_PKT_BUF_SIZE)
+		return -EMSGSIZE;
+
+	skb = virtio_transport_alloc_skb(&info, dgram_len,
+					 src_cid, src_port,
+					 remote_addr->svm_cid,
+					 remote_addr->svm_port,
+					 &err);
+
+	if (!skb)
+		return err;
+
+	return t_ops->send_pkt(skb);
 }
 EXPORT_SYMBOL_GPL(virtio_transport_dgram_enqueue);
 
@@ -845,6 +964,7 @@ static int virtio_transport_reset_no_sock(const struct virtio_transport *t,
 		.reply = true,
 	};
 	struct sk_buff *reply;
+	int err;
 
 	/* Send RST only if the original pkt is not a RST pkt */
 	if (le16_to_cpu(hdr->op) == VIRTIO_VSOCK_OP_RST)
@@ -857,9 +977,10 @@ static int virtio_transport_reset_no_sock(const struct virtio_transport *t,
 					   le64_to_cpu(hdr->dst_cid),
 					   le32_to_cpu(hdr->dst_port),
 					   le64_to_cpu(hdr->src_cid),
-					   le32_to_cpu(hdr->src_port));
+					   le32_to_cpu(hdr->src_port),
+					   &err);
 	if (!reply)
-		return -ENOMEM;
+		return err;
 
 	return t->send_pkt(reply);
 }
@@ -1047,7 +1168,11 @@ virtio_transport_recv_enqueue(struct vsock_sock *vsk,
 	/* Try to copy small packets into the buffer of last packet queued,
 	 * to avoid wasting memory queueing the entire buffer with a small
 	 * payload.
+	 *
+	 * Do not copy datagrams, as each receive operation is expected to be
+	 * one and only one packet.
 	 */
+
 	if (len <= GOOD_COPY_LEN && !skb_queue_empty(&vvs->rx_queue)) {
 		struct virtio_vsock_hdr *last_hdr;
 		struct sk_buff *last_skb;
@@ -1077,6 +1202,25 @@ out:
 	spin_unlock_bh(&vvs->rx_lock);
 	if (free_pkt)
 		kfree_skb(skb);
+}
+
+/* This function takes ownership of the skb.
+ *
+ * It either places the skb on the sk_receive_queue or frees it.
+ */
+static int
+virtio_transport_recv_dgram(struct sock *sk, struct sk_buff *skb)
+{
+	int err;
+
+	err = sock_queue_rcv_skb(sk, skb);
+	if (err < 0) {
+		kfree_skb(skb);
+		return err;
+	}
+
+	sk->sk_data_ready(sk);
+	return 0;
 }
 
 static int
@@ -1242,7 +1386,8 @@ virtio_transport_recv_listen(struct sock *sk, struct sk_buff *skb,
 static bool virtio_transport_valid_type(u16 type)
 {
 	return (type == VIRTIO_VSOCK_TYPE_STREAM) ||
-	       (type == VIRTIO_VSOCK_TYPE_SEQPACKET);
+	       (type == VIRTIO_VSOCK_TYPE_SEQPACKET) ||
+	       (type == VIRTIO_VSOCK_TYPE_DGRAM);
 }
 
 /* We are under the virtio-vsock's vsock->rx_lock or vhost-vsock's vq->mutex
@@ -1256,22 +1401,25 @@ void virtio_transport_recv_pkt(struct virtio_transport *t,
 	struct vsock_sock *vsk;
 	struct sock *sk;
 	bool space_available;
+	u16 type;
 
 	vsock_addr_init(&src, le64_to_cpu(hdr->src_cid),
 			le32_to_cpu(hdr->src_port));
 	vsock_addr_init(&dst, le64_to_cpu(hdr->dst_cid),
 			le32_to_cpu(hdr->dst_port));
 
+	type = le16_to_cpu(hdr->type);
+
 	trace_virtio_transport_recv_pkt(src.svm_cid, src.svm_port,
 					dst.svm_cid, dst.svm_port,
 					le32_to_cpu(hdr->len),
-					le16_to_cpu(hdr->type),
+					type,
 					le16_to_cpu(hdr->op),
 					le32_to_cpu(hdr->flags),
 					le32_to_cpu(hdr->buf_alloc),
 					le32_to_cpu(hdr->fwd_cnt));
 
-	if (!virtio_transport_valid_type(le16_to_cpu(hdr->type))) {
+	if (!virtio_transport_valid_type(type)) {
 		(void)virtio_transport_reset_no_sock(t, skb);
 		goto free_pkt;
 	}
@@ -1283,13 +1431,15 @@ void virtio_transport_recv_pkt(struct virtio_transport *t,
 	if (!sk) {
 		sk = vsock_find_bound_socket(&dst);
 		if (!sk) {
-			(void)virtio_transport_reset_no_sock(t, skb);
+			if (type != VIRTIO_VSOCK_TYPE_DGRAM)
+				(void)virtio_transport_reset_no_sock(t, skb);
 			goto free_pkt;
 		}
 	}
 
-	if (virtio_transport_get_type(sk) != le16_to_cpu(hdr->type)) {
-		(void)virtio_transport_reset_no_sock(t, skb);
+	if (virtio_transport_get_type(sk) != type) {
+		if (type != VIRTIO_VSOCK_TYPE_DGRAM)
+			(void)virtio_transport_reset_no_sock(t, skb);
 		sock_put(sk);
 		goto free_pkt;
 	}
@@ -1300,10 +1450,16 @@ void virtio_transport_recv_pkt(struct virtio_transport *t,
 
 	/* Check if sk has been closed before lock_sock */
 	if (sock_flag(sk, SOCK_DONE)) {
-		(void)virtio_transport_reset_no_sock(t, skb);
+		if (type != VIRTIO_VSOCK_TYPE_DGRAM)
+			(void)virtio_transport_reset_no_sock(t, skb);
 		release_sock(sk);
 		sock_put(sk);
 		goto free_pkt;
+	}
+
+	if (sk->sk_type == SOCK_DGRAM) {
+		virtio_transport_recv_dgram(sk, skb);
+		goto out;
 	}
 
 	space_available = virtio_transport_space_update(sk, skb);
@@ -1337,6 +1493,7 @@ void virtio_transport_recv_pkt(struct virtio_transport *t,
 		break;
 	}
 
+out:
 	release_sock(sk);
 
 	/* Release refcnt obtained when we fetched this socket out of the
