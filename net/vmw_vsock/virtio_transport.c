@@ -125,6 +125,8 @@ virtio_transport_send_pkt_work(struct work_struct *work)
 		 * the vq
 		 */
 		if (ret < 0) {
+			if (skb->dev)
+				netif_stop_queue(skb->dev);
 			virtio_vsock_skb_queue_head(&vsock->send_pkt_queue, skb);
 			break;
 		}
@@ -269,6 +271,8 @@ static void virtio_transport_tx_work(struct work_struct *work)
 
 		virtqueue_disable_cb(vq);
 		while ((skb = virtqueue_get_buf(vq, &len)) != NULL) {
+			if (skb->dev)
+				netif_wake_queue(skb->dev);
 			consume_skb(skb);
 			added = true;
 		}
@@ -415,6 +419,35 @@ static void virtio_vsock_rx_done(struct virtqueue *vq)
 }
 
 static bool virtio_transport_seqpacket_allow(u32 remote_cid);
+
+u32 virtio_transport_get_cid_from_skb(struct sk_buff *skb)
+{
+	return le64_to_cpu(virtio_vsock_hdr(skb)->dst_cid);
+}
+
+int virtio_transport_get_pending_tx(struct vsock_dev *vdev)
+{
+	struct virtio_vsock *vsock;
+	int len;
+
+	rcu_read_lock();
+	vsock = rcu_dereference(the_virtio_vsock);
+	if (!vsock) {
+		len = -ENODEV;
+		goto out_rcu;
+	}
+
+	/* We only need this bound to be approximate, so return the length
+	 * without acquiring the queue lock.
+	 *
+	 * With this, the len may shrink/grow to be NR_CPUS off.
+	 */
+	len = skb_queue_len_lockless(&vsock->send_pkt_queue);
+
+out_rcu:
+	rcu_read_unlock();
+	return len;
+}
 
 static struct virtio_transport virtio_transport = {
 	.transport = {
