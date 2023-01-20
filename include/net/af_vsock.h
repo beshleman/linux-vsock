@@ -100,6 +100,8 @@ struct vsock_transport_send_notify_data {
 	u64 data2; /* Transport-defined. */
 };
 
+struct vsock_dev;
+
 /* Transport features flags */
 /* Transport provides host->guest communication */
 #define VSOCK_TRANSPORT_F_H2G		0x00000001
@@ -258,5 +260,26 @@ int vsock_remote_addr_copy(struct vsock_sock *vsk, struct sockaddr_vm *dest);
 bool vsock_remote_addr_bound(struct vsock_sock *vsk);
 bool vsock_remote_addr_equals(struct vsock_sock *vsk, struct sockaddr_vm *other);
 int vsock_remote_addr_update_cid_port(struct vsock_sock *vsk, u32 cid, u32 port);
+
+/**** DEVICE ****/
+
+struct vsock_dev {
+	struct list_head table;
+	int (*send_pkt)(struct sk_buff *skb);
+	struct net_device *dev;
+	const struct vsock_transport *transport;
+	u32 cid;
+};
+
+void vsock_dev_init_dev_table(void);
+void vsock_dev_deinit_dev_table(void);
+
+void vsock_dev_add_dev(struct vsock_dev *vdev);
+void vsock_dev_del_dev(struct vsock_dev *vdev);
+void vsock_dev_dec_skb(struct sk_buff *skb);
+struct vsock_dev *vsock_dev_find_dev(u32 cid);
+int vsock_dev_send_pkt(int (*send_pkt)(struct sk_buff *), struct sk_buff *skb, u32 dst_cid);
+int vsock_dev_assign_transport(struct vsock_sock *vsk, const struct vsock_transport *transport);
+void vsock_dev_deassign_transport(struct vsock_sock *vsk);
 
 #endif /* __AF_VSOCK_H__ */
