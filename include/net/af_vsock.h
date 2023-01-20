@@ -227,4 +227,57 @@ int vsock_add_tap(struct vsock_tap *vt);
 int vsock_remove_tap(struct vsock_tap *vt);
 void vsock_deliver_tap(struct sk_buff *build_skb(void *opaque), void *opaque);
 
+typedef int (vsock_send_fn)(int (*fn)(struct sk_buff *), struct sk_buff *skb, u32 cid);
+extern vsock_send_fn *__vsock_send_pkt;
+
+static inline int
+vsock_send_pkt(int (*send_pkt)(struct sk_buff *), struct sk_buff *skb, u32 dst_cid)
+{
+#ifdef CONFIG_VSOCKETS_DEV
+	vsock_send_fn *fn;
+
+	fn = smp_load_acquire(&__vsock_send_pkt);
+	if (fn)
+		return fn(send_pkt, skb, dst_cid);
+#endif
+	return send_pkt(skb);
+}
+
+#ifdef CONFIG_VSOCKETS_DEV
+/* FIXME: cleanup order of these */
+struct vsock_dev *vsock_dev_find_dev(u32 cid);
+
+void vsock_dev_dec_skb(u32 cid, int cnt);
+
+static inline void
+vsock_dev_start_queue(struct sk_buff *skb)
+{
+	if (!skb->dev)
+		return;
+
+	netif_start_queue(skb->dev);
+}
+
+static inline void
+vsock_dev_stop_queue(struct sk_buff *skb)
+{
+	if (!skb->dev)
+		return;
+
+	netif_stop_queue(skb->dev);
+}
+#else
+static inline void
+vsock_dev_dec_skb(u32 cid, int cnt) {}
+
+struct vsock_dev *
+vsock_dev_find_dev(u32 cid) {}
+
+static inline void
+vsock_dev_start_queue(struct sk_buff *skb) {}
+
+static inline void
+vsock_dev_stop_queue(struct sk_buff *skb) {}
+#endif
+
 #endif /* __AF_VSOCK_H__ */
