@@ -87,6 +87,9 @@ virtio_transport_alloc_skb(struct virtio_vsock_pkt_info *info,
 	if (info->reply)
 		virtio_vsock_skb_set_reply(skb);
 
+	if (info->vsk)
+		skb->priority = sk_vsock(info->vsk)->sk_priority;
+
 	trace_virtio_transport_alloc_pkt(src_cid, src_port,
 					 dst_cid, dst_port,
 					 len,
