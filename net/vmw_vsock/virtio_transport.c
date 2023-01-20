@@ -62,6 +62,10 @@ struct virtio_vsock {
 	bool event_run;
 	struct virtio_vsock_event event_list[8];
 
+#ifdef CONFIG_VSOCKETS_DEV
+	struct vsock_dev *vsock_dev;
+#endif
+
 	u32 guest_cid;
 	bool seqpacket_allow;
 };
@@ -202,6 +206,11 @@ virtio_transport_cancel_pkt(struct vsock_sock *vsk)
 
 	cnt = virtio_transport_purge_skbs(vsk, &vsock->send_pkt_queue);
 
+#ifdef CONFIG_VSOCKETS_DEV
+	/* Do this for all skb cids */
+	vsock_dev_dec_skb(VMADDR_CID_HOST, cnt);
+#endif
+
 	if (cnt) {
 		struct virtqueue *rx_vq = vsock->vqs[VSOCK_VQ_RX];
 		int new_cnt;
@@ -256,6 +265,7 @@ static void virtio_transport_tx_work(struct work_struct *work)
 		container_of(work, struct virtio_vsock, tx_work);
 	struct virtqueue *vq;
 	bool added = false;
+	int cnt = 0;
 
 	vq = vsock->vqs[VSOCK_VQ_TX];
 	mutex_lock(&vsock->tx_lock);
@@ -269,6 +279,7 @@ static void virtio_transport_tx_work(struct work_struct *work)
 
 		virtqueue_disable_cb(vq);
 		while ((skb = virtqueue_get_buf(vq, &len)) != NULL) {
+			cnt++;
 			consume_skb(skb);
 			added = true;
 		}
@@ -279,6 +290,14 @@ out:
 
 	if (added)
 		queue_work(virtio_vsock_workqueue, &vsock->send_pkt_work);
+
+#ifdef CONFIG_VSOCKETS_DEV
+	/* FIXME: What if the user initializes a device mid flow? will this always
+	 * work?
+	 */
+	if (cnt > 0)
+		vsock_dev_dec_skb(VMADDR_CID_HOST, cnt);
+#endif
 }
 
 /* Is there space left for replies to rx packets? */
@@ -785,7 +804,14 @@ static int __init virtio_vsock_init(void)
 	if (ret)
 		goto out_vci;
 
+	ret = vsock_dev_register();
+	if (ret)
+		goto out_unreg;
+
 	return 0;
+
+out_unreg:
+	unregister_virtio_driver(&virtio_vsock_driver);
 
 out_vci:
 	vsock_core_unregister(&virtio_transport.transport);
@@ -796,6 +822,7 @@ out_wq:
 
 static void __exit virtio_vsock_exit(void)
 {
+	vsock_dev_unregister();
 	unregister_virtio_driver(&virtio_vsock_driver);
 	vsock_core_unregister(&virtio_transport.transport);
 	destroy_workqueue(virtio_vsock_workqueue);

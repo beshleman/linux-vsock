@@ -115,6 +115,9 @@ static int __vsock_bind(struct sock *sk, struct sockaddr_vm *addr);
 static void vsock_sk_destruct(struct sock *sk);
 static int vsock_queue_rcv_skb(struct sock *sk, struct sk_buff *skb);
 
+vsock_send_fn *__vsock_send_pkt;
+EXPORT_SYMBOL_GPL(__vsock_send_pkt);
+
 /* Protocol family. */
 static struct proto vsock_proto = {
 	.name = "AF_VSOCK",

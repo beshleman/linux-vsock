@@ -132,15 +132,38 @@ struct flow_dissector_key_tipc {
 };
 
 /**
+ * struct flow_dissector_key_vsock:
+ * @src_cid: source context ID
+ * @dst_cid: destination context ID
+ * @port: port number
+ * @type: the type of packet (dgram, stream, or seqpacket)
+ */
+struct __flow_dissector_key_vsock_virtio {
+	__le64 src_cid;
+	__le64 dst_cid;
+	__le32 src_port;
+	__le32 dst_port;
+};
+
+struct flow_dissector_key_vsock {
+	union {
+		struct __flow_dissector_key_vsock_virtio virtio;
+	};
+};
+
+/**
  * struct flow_dissector_key_addrs:
  * @v4addrs: IPv4 addresses
  * @v6addrs: IPv6 addresses
+ * @tipckey: TIPC addresses
+ * @vsock: vsock addresses
  */
 struct flow_dissector_key_addrs {
 	union {
 		struct flow_dissector_key_ipv4_addrs v4addrs;
 		struct flow_dissector_key_ipv6_addrs v6addrs;
 		struct flow_dissector_key_tipc tipckey;
+		struct flow_dissector_key_vsock vsock;
 	};
 };
 
@@ -329,6 +352,7 @@ enum flow_dissector_key_id {
 	FLOW_DISSECTOR_KEY_NUM_OF_VLANS, /* struct flow_dissector_key_num_of_vlans */
 	FLOW_DISSECTOR_KEY_PPPOE, /* struct flow_dissector_key_pppoe */
 	FLOW_DISSECTOR_KEY_L2TPV3, /* struct flow_dissector_key_l2tpv3 */
+	FLOW_DISSECTOR_KEY_VSOCK, /* struct flow_dissector_key_vsock */
 
 	FLOW_DISSECTOR_KEY_MAX,
 };
