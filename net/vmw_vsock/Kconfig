@@ -26,6 +26,15 @@ config VSOCKETS_DIAG
 
 	  Enable this module so userspace applications can query open sockets.
 
+config VSOCKETS_DEV
+	tristate "Virtual Sockets device support"
+	depends on VSOCKETS && VIRTIO_VSOCKETS
+	default y
+	help
+	  Support for vsocket devices. Helpful for applying packet scheduling
+	  policies to vsocket traffic and maintaining traffic statistics.
+	  Only supported with the virtio transport.
+
 config VSOCKETS_LOOPBACK
 	tristate "Virtual Sockets loopback transport"
 	depends on VSOCKETS

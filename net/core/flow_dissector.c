@@ -26,6 +26,7 @@
 #include <linux/mpls.h>
 #include <linux/tcp.h>
 #include <linux/ptp_classify.h>
+#include <linux/virtio_vsock.h>
 #include <net/flow_dissector.h>
 #include <scsi/fc/fc_fcoe.h>
 #include <uapi/linux/batadv_packet.h>
@@ -226,6 +227,38 @@ static void __skb_flow_dissect_l2tpv3(const struct sk_buff *skb,
 					       target_container);
 
 	key_l2tpv3->session_id = hdr->session_id;
+}
+
+/* TODO: the dissector will need to differentiate between hyperv, vmci,
+ * and virtio packets. Currently only virtio is supported.
+ */
+static enum flow_dissect_ret
+__skb_flow_dissect_vsock(const struct sk_buff *skb,
+			 struct flow_dissector *flow_dissector,
+			 void *target_container, const void *data,
+			 int nhoff, int hlen,
+			 struct flow_dissector_key_control *key_control)
+{
+	struct flow_dissector_key_vsock *key_vsock;
+	struct virtio_vsock_hdr *hdr, _hdr;
+
+	if (!dissector_uses_key(flow_dissector, FLOW_DISSECTOR_KEY_VSOCK))
+		return FLOW_DISSECT_RET_OUT_BAD;
+
+	key_vsock = skb_flow_dissector_target(flow_dissector,
+					      FLOW_DISSECTOR_KEY_VSOCK,
+					      target_container);
+	hdr = __skb_header_pointer(skb, nhoff, sizeof(_hdr), data, hlen, &_hdr);
+	if (!hdr)
+		return FLOW_DISSECT_RET_OUT_BAD;
+
+	key_vsock->virtio.src_cid = hdr->src_cid;
+	key_vsock->virtio.dst_cid = hdr->dst_cid;
+	key_vsock->virtio.src_port = hdr->src_port;
+	key_vsock->virtio.dst_port = hdr->dst_port;
+	key_control->addr_type = FLOW_DISSECTOR_KEY_VSOCK;
+
+	return FLOW_DISSECT_RET_OUT_GOOD;
 }
 
 void skb_flow_dissect_meta(const struct sk_buff *skb,
@@ -1389,6 +1422,11 @@ proto_again:
 		fdret = FLOW_DISSECT_RET_PROTO_AGAIN;
 		break;
 	}
+	case htons(ETH_P_VSOCK): {
+		fdret = __skb_flow_dissect_vsock(skb, flow_dissector, target_container,
+						 data, nhoff, hlen, key_control);
+		break;
+	 }
 
 	default:
 		fdret = FLOW_DISSECT_RET_OUT_BAD;
@@ -1601,6 +1639,9 @@ static inline size_t flow_keys_hash_length(const struct flow_keys *flow)
 		break;
 	case FLOW_DISSECTOR_KEY_TIPC:
 		diff -= sizeof(flow->addrs.tipckey);
+		break;
+	case FLOW_DISSECTOR_KEY_VSOCK:
+		diff -= sizeof(flow->addrs.vsock);
 		break;
 	}
 	return sizeof(*flow) - diff;
@@ -1888,6 +1929,10 @@ static const struct flow_dissector_key flow_keys_dissector_keys[] = {
 	{
 		.key_id = FLOW_DISSECTOR_KEY_TIPC,
 		.offset = offsetof(struct flow_keys, addrs.tipckey),
+	},
+	{
+		.key_id = FLOW_DISSECTOR_KEY_VSOCK,
+		.offset = offsetof(struct flow_keys, addrs.vsock),
 	},
 	{
 		.key_id = FLOW_DISSECTOR_KEY_PORTS,

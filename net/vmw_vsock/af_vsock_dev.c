@@ -1,0 +1,139 @@
+#include <linux/kernel.h>
+#include <net/af_vsock.h>
+
+#define VSOCK_DEV_HASH_SIZE 256U
+#define VSOCK_DEV_HASH(cid) ((cid) % VSOCK_DEV_HASH_SIZE)
+
+/* This table must be read in an RCU read-side section */
+struct list_head vsock_dev_table[VSOCK_DEV_HASH_SIZE];
+EXPORT_SYMBOL_GPL(vsock_dev_table);
+
+/* Protects all writes of vsock_dev_table.
+ *
+ * It is *NOT* required for reads (which *must* occur
+ * in an RCU read-side section).
+ */
+static DEFINE_SPINLOCK(vsock_dev_table_write_lock);
+
+void vsock_dev_add_dev(struct vsock_dev *vdev)
+{
+	spin_lock(&vsock_dev_table_write_lock);
+	list_add_tail_rcu(&vdev->table, &vsock_dev_table[VSOCK_DEV_HASH(vdev->cid)]);
+	spin_unlock(&vsock_dev_table_write_lock);
+	synchronize_rcu();
+}
+EXPORT_SYMBOL_GPL(vsock_dev_add_dev);
+
+void vsock_dev_del_dev(struct vsock_dev *vdev)
+{
+	spin_lock(&vsock_dev_table_write_lock);
+	list_del_rcu(&vdev->table);
+	spin_unlock(&vsock_dev_table_write_lock);
+	synchronize_rcu();
+}
+EXPORT_SYMBOL_GPL(vsock_dev_del_dev);
+
+struct vsock_dev *vsock_dev_find_dev(u32 cid)
+{
+	struct list_head *list = &vsock_dev_table[VSOCK_DEV_HASH(cid)];
+	struct vsock_dev *vdev = NULL;
+
+	rcu_read_lock();
+	if (list_empty(list))
+		goto out;
+
+	list_for_each_entry_rcu(vdev, list, table) {
+		if (vdev->cid == cid)
+			goto out;
+	}
+out:
+	rcu_read_unlock();
+	return vdev;
+}
+EXPORT_SYMBOL_GPL(vsock_dev_find_dev);
+
+int vsock_dev_assign_transport(struct vsock_sock *vsk, const struct vsock_transport *transport)
+{
+	unsigned int remote_cid = vsk->remote_addr.svm_cid;
+	struct vsock_dev *vdev;
+
+	/* The transport doesn't support devices */
+	if (!transport->dev_send_pkt || !transport->get_pending_tx)
+		return 0;
+
+	vdev = vsock_dev_find_dev(remote_cid);
+	if (!vdev)
+		return 0;
+
+	if (!vdev->transport) {
+		if (!try_module_get(transport->module))
+			return -ENODEV;
+
+		vdev->transport = transport;
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(vsock_dev_assign_transport);
+
+void vsock_dev_deassign_transport(struct vsock_sock *vsk)
+{
+	unsigned int remote_cid = vsk->remote_addr.svm_cid;
+	struct vsock_dev *vdev;
+
+	vdev = vsock_dev_find_dev(remote_cid);
+	if (!vdev)
+		return;
+
+	if (vdev->transport) {
+		if (vdev->transport->module)
+			module_put(vdev->transport->module);
+		vdev->transport = NULL;
+	}
+}
+EXPORT_SYMBOL_GPL(vsock_dev_deassign_transport);
+
+int vsock_dev_send_pkt(int (*send_pkt)(struct sk_buff *), struct sk_buff *skb, u32 dst_cid)
+{
+	struct vsock_dev *vdev;
+	int len;
+	int err;
+
+	if ((vdev = vsock_dev_find_dev(dst_cid)) != NULL) {
+		if (vdev->send_pkt != send_pkt)
+			vdev->send_pkt = send_pkt;
+		skb->dev = vdev->dev;
+		skb->protocol = htons(ETH_P_VSOCK);
+		len = skb->len;
+		err = dev_queue_xmit(skb);
+		if (likely(net_xmit_eval(err) == 0)) {
+			if (err == NET_XMIT_CN)
+				pr_warn_ratelimited("congestion detected on vsock qdisc, some packets may have been dropped\n");
+			return len;
+		}
+		return -ENOMEM;
+	}
+
+	return send_pkt(skb);
+}
+EXPORT_SYMBOL_GPL(vsock_dev_send_pkt);
+
+void vsock_dev_init_dev_table(void)
+{
+	int i;
+
+	for (i = 0; i < VSOCK_DEV_HASH_SIZE; i++)
+		INIT_LIST_HEAD(&vsock_dev_table[i]);
+}
+EXPORT_SYMBOL_GPL(vsock_dev_init_dev_table);
+
+void vsock_dev_deinit_dev_table(void)
+{
+	struct vsock_dev *vdev;
+	int i;
+
+	for (i = 0; i < VSOCK_DEV_HASH_SIZE; i++)
+		list_for_each_entry_rcu(vdev, &vsock_dev_table[i], table)
+			list_del_rcu(&vdev->table);
+}
+EXPORT_SYMBOL_GPL(vsock_dev_deinit_dev_table);
