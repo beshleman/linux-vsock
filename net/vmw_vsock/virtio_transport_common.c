@@ -235,7 +235,7 @@ static int virtio_transport_send_pkt_info(struct vsock_sock *vsk,
 
 	virtio_transport_inc_tx_pkt(vvs, skb);
 
-	return t_ops->send_pkt(skb);
+	return vsock_dev_send_pkt(t_ops->send_pkt, skb, dst_cid);
 }
 
 static bool virtio_transport_inc_rx_pkt(struct virtio_vsock_sock *vvs,
@@ -863,7 +863,7 @@ virtio_transport_dgram_enqueue(struct vsock_sock *vsk,
 	if (!skb)
 		return -ENOMEM;
 
-	return t_ops->send_pkt(skb);
+	return vsock_dev_send_pkt(t_ops->send_pkt, skb, remote_addr->svm_cid);
 }
 EXPORT_SYMBOL_GPL(virtio_transport_dgram_enqueue);
 
@@ -1473,6 +1473,8 @@ int virtio_transport_purge_skbs(void *vsk, struct sk_buff_head *queue)
 	skb_queue_walk_safe(queue, skb, tmp) {
 		if (vsock_sk(skb->sk) != vsk)
 			continue;
+
+		vsock_dev_dec_skb(skb);
 
 		__skb_unlink(skb, queue);
 		__skb_queue_tail(&freeme, skb);

@@ -62,6 +62,8 @@ struct virtio_vsock {
 	bool event_run;
 	struct virtio_vsock_event event_list[8];
 
+	struct vsock_dev *vsock_dev;
+
 	u32 guest_cid;
 	bool seqpacket_allow;
 };
@@ -269,6 +271,7 @@ static void virtio_transport_tx_work(struct work_struct *work)
 
 		virtqueue_disable_cb(vq);
 		while ((skb = virtqueue_get_buf(vq, &len)) != NULL) {
+			vsock_dev_dec_skb(skb);
 			consume_skb(skb);
 			added = true;
 		}

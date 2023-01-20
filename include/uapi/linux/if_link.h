@@ -1394,4 +1394,14 @@ enum {
 
 #define IFLA_DSA_MAX	(__IFLA_DSA_MAX - 1)
 
+/* VSOCK section */
+
+enum {
+	IFLA_VSOCK_UNSPEC,
+	IFLA_VSOCK_CID,
+	__IFLA_VSOCK_MAX,
+};
+
+#define IFLA_VSOCK_MAX (__IFLA_VSOCK_MAX - 1)
+
 #endif /* _UAPI_LINUX_IF_LINK_H */
