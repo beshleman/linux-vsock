@@ -1,0 +1,65 @@
+name: Build kernel
+
+on:
+  push:
+    branches:
+      - '*'
+
+jobs:
+  build:
+    runs-on: self-hosted
+    container:
+      image: beshleman/debian-kernel:latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      with:
+        clean: false
+        path: linux
+
+    - name: Load ccache
+      uses: actions/cache@v3
+      with:
+        path: ${GITHUB_WORKSPACE}/ccache
+        key: linux-kernel-x86_64-vsock
+
+    - name: Download config file
+      run: |
+        wget -O linux/.config https://raw.githubusercontent.com/beshleman/configs/master/vsock.x86_64
+
+    - name: Setup debian certs for build
+      run: |
+        mkdir -p linux/debian/certs/
+        wget -O linux/debian/certs/debian-uefi-certs.pem https://salsa.debian.org/kernel-team/linux/-/raw/master/debian/certs/debian-uefi-certs.pem
+
+    - name: Build kernel
+      env:
+        CCACHE_DIR: ${GITHUB_WORKSPACE}/ccache
+        CC: ccache gcc
+      run: |
+        ccache -z
+        ccache -M 5G
+        cd linux
+        make olddefconfig
+        make -j$(nproc)
+        ccache -s
+
+    - name: Generate linux artifacts
+      shell: bash
+      run: |
+        set -x
+        mkdir -p /tmp/boot/ && rm -f /tmp/boot/*
+        cd linux
+        make install INSTALL_PATH=/tmp/boot
+        wget https://gist.githubusercontent.com/beshleman/cdf1bda0bb736b0d0bdb3a50fb075285/raw/7958c44d9af9530d9cb521bf926ae78cc7e6caf1/initramfs.conf -O /etc/initramfs-tools/initramfs.conf
+        cat /etc/initramfs-tools/initramfs.conf | grep RESUME
+        update-initramfs -b /tmp/boot/ -k $(make -s kernelversion) -c
+
+    - run: du -d 0 -h ${GITHUB_WORKSPACE}/ccache
+
+    - name: Upload linux artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: linux
+        path: /tmp/boot/*
