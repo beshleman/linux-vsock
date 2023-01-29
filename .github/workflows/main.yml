@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - '*'
+      - 'b4/*'
 
 jobs:
   build:
