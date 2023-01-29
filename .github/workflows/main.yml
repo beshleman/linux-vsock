@@ -53,7 +53,7 @@ jobs:
         cd linux
         make install INSTALL_PATH=/tmp/boot
         wget https://gist.githubusercontent.com/beshleman/cdf1bda0bb736b0d0bdb3a50fb075285/raw/7958c44d9af9530d9cb521bf926ae78cc7e6caf1/initramfs.conf -O /etc/initramfs-tools/initramfs.conf
-        cat /etc/initramfs-tools/initramfs.conf | grep RESUME
+        cat /etc/initramfs-tools/initramfs.conf | grep RESUME=none
         update-initramfs -b /tmp/boot/ -k $(make -s kernelversion) -c
 
     - run: du -d 0 -h ${GITHUB_WORKSPACE}/ccache
