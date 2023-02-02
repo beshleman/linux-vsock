@@ -37,6 +37,35 @@ virtio_transport_get_ops(struct vsock_sock *vsk)
 	return container_of(t, struct virtio_transport, transport);
 }
 
+/* Requires info->msg and info->vsk */
+static struct sk_buff *
+virtio_transport_sock_alloc_send_skb(struct virtio_vsock_pkt_info *info, unsigned int size,
+				     gfp_t mask, int *err)
+{
+	int noblock;
+	struct sk_buff *skb;
+	struct sock *sk;
+
+	if (size < VIRTIO_VSOCK_SKB_HEADROOM) {
+		*err = -EINVAL;
+		return NULL;
+	}
+
+	if (info->msg)
+		noblock = info->msg->msg_flags & MSG_DONTWAIT;
+	else
+		noblock = 1;
+
+	sk = sk_vsock(info->vsk);
+	sk->sk_allocation = mask;
+	skb = sock_alloc_send_skb(sk, size, noblock, err);
+	if (!skb)
+		return NULL;
+
+	skb_reserve(skb, VIRTIO_VSOCK_SKB_HEADROOM);
+	return skb;
+}
+
 /* Returns a new packet on success, otherwise returns NULL.
  *
  * If NULL is returned, errp is set to a negative errno.
@@ -47,7 +76,8 @@ virtio_transport_alloc_skb(struct virtio_vsock_pkt_info *info,
 			   u32 src_cid,
 			   u32 src_port,
 			   u32 dst_cid,
-			   u32 dst_port)
+			   u32 dst_port,
+			   int *errp)
 {
 	const size_t skb_len = VIRTIO_VSOCK_SKB_HEADROOM + len;
 	struct virtio_vsock_hdr *hdr;
@@ -55,9 +85,19 @@ virtio_transport_alloc_skb(struct virtio_vsock_pkt_info *info,
 	void *payload;
 	int err;
 
-	skb = virtio_vsock_alloc_skb(skb_len, GFP_KERNEL);
-	if (!skb)
+	/* This likely() prefers the OP_RW path. */
+	if (likely(info->vsk)) {
+		skb = virtio_transport_sock_alloc_send_skb(info, skb_len, GFP_KERNEL, &err);
+	} else {
+		skb = virtio_vsock_alloc_skb(skb_len, GFP_KERNEL);
+		if (!skb)
+			err = -ENOMEM;
+	}
+
+	if (!skb) {
+		*errp = err;
 		return NULL;
+	}
 
 	hdr = virtio_vsock_hdr(skb);
 	hdr->type	= cpu_to_le16(info->type);
@@ -100,6 +140,7 @@ virtio_transport_alloc_skb(struct virtio_vsock_pkt_info *info,
 	return skb;
 
 out:
+	*errp = err;
 	kfree_skb(skb);
 	return NULL;
 }
@@ -202,6 +243,7 @@ static int virtio_transport_send_pkt_info(struct vsock_sock *vsk,
 	struct virtio_vsock_sock *vvs;
 	u32 pkt_len = info->pkt_len;
 	struct sk_buff *skb;
+	int err;
 
 	info->type = virtio_transport_get_type(sk_vsock(vsk));
 
@@ -240,11 +282,11 @@ static int virtio_transport_send_pkt_info(struct vsock_sock *vsk,
 
 	skb = virtio_transport_alloc_skb(info, pkt_len,
 					 src_cid, src_port,
-					 dst_cid, dst_port);
+					 dst_cid, dst_port, &err);
 	if (!skb) {
 		if (info->type != VIRTIO_VSOCK_TYPE_DGRAM)
 			virtio_transport_put_credit(vvs, pkt_len);
-		return -ENOMEM;
+		return err;
 	}
 
 	virtio_transport_inc_tx_pkt(vvs, skb);
@@ -1015,6 +1057,7 @@ static int virtio_transport_reset_no_sock(const struct virtio_transport *t,
 		.reply = true,
 	};
 	struct sk_buff *reply;
+	int err;
 
 	/* Send RST only if the original pkt is not a RST pkt */
 	if (le16_to_cpu(hdr->op) == VIRTIO_VSOCK_OP_RST)
@@ -1024,9 +1067,10 @@ static int virtio_transport_reset_no_sock(const struct virtio_transport *t,
 					   le64_to_cpu(hdr->dst_cid),
 					   le32_to_cpu(hdr->dst_port),
 					   le64_to_cpu(hdr->src_cid),
-					   le32_to_cpu(hdr->src_port));
+					   le32_to_cpu(hdr->src_port),
+					   &err);
 	if (!reply)
-		return -ENOMEM;
+		return err;
 
 	if (!t) {
 		kfree_skb(reply);
