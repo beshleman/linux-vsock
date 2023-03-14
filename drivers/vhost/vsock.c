@@ -296,13 +296,17 @@ static int
 vhost_transport_cancel_pkt(struct vsock_sock *vsk)
 {
 	struct vhost_vsock *vsock;
+	unsigned int cid;
 	int cnt = 0;
 	int ret = -ENODEV;
 
 	rcu_read_lock();
+	ret = vsock_remote_addr_cid(vsk, &cid);
+	if (ret < 0)
+		goto out;
 
 	/* Find the vhost_vsock according to guest context id  */
-	vsock = vhost_vsock_get(vsk->remote_addr.svm_cid);
+	vsock = vhost_vsock_get(cid);
 	if (!vsock)
 		goto out;
 
@@ -686,6 +690,10 @@ static void vhost_vsock_flush(struct vhost_vsock *vsock)
 static void vhost_vsock_reset_orphans(struct sock *sk)
 {
 	struct vsock_sock *vsk = vsock_sk(sk);
+	unsigned int cid;
+
+	if (vsock_remote_addr_cid(vsk, &cid) < 0)
+		return;
 
 	/* vmci_transport.c doesn't take sk_lock here either.  At least we're
 	 * under vsock_table_lock so the sock cannot disappear while we're
@@ -693,7 +701,7 @@ static void vhost_vsock_reset_orphans(struct sock *sk)
 	 */
 
 	/* If the peer is still valid, no need to reset connection */
-	if (vhost_vsock_get(vsk->remote_addr.svm_cid))
+	if (vhost_vsock_get(cid))
 		return;
 
 	/* If the close timeout is pending, let it expire.  This avoids races
