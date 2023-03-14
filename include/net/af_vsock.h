@@ -66,6 +66,9 @@ struct vsock_sock {
 	bool sent_request;
 	bool ignore_connecting_rst;
 
+	/* cached remote address for lockless xmit path */
+	struct sockaddr_vm __rcu *cached_remote_addr;
+
 	/* Protected by lock_sock(sk) */
 	u64 buffer_size;
 	u64 buffer_min_size;
@@ -175,6 +178,61 @@ struct vsock_transport {
 	/* Addressing. */
 	u32 (*get_local_cid)(void);
 };
+
+static inline int
+vsock_cached_remote_addr_get(struct vsock_sock *vsk, struct sockaddr_vm *dest)
+{
+	struct sockaddr_vm *p;
+	int err = -EINVAL;
+
+	rcu_read_lock();
+	p = rcu_dereference(vsk->cached_remote_addr);
+	if (!p)
+		goto out_rcu;
+
+	if (dest)
+		memcpy(dest, p, sizeof(*dest));
+	err = 0;
+
+out_rcu:
+	rcu_read_unlock();
+	return err;
+}
+
+/* Must be called with socket lock acquired */
+static inline int
+vsock_cached_remote_addr_update(struct vsock_sock *vsk)
+{
+	struct sockaddr_vm *new, *old;
+
+	BUILD_BUG_ON(sizeof(*new) != sizeof(vsk->remote_addr));
+
+	new = kmalloc(sizeof(*new), GFP_KERNEL);
+	if (!new)
+		return -ENOMEM;
+
+	memcpy(new, &vsk->remote_addr, sizeof(*new));
+
+	old = rcu_replace_pointer(vsk->cached_remote_addr, new,
+				  lockdep_sock_is_held(sk_vsock(vsk)));
+	synchronize_rcu();
+	kfree(old);
+
+	return 0;
+}
+
+static inline int
+vsock_cached_remote_addr_free(struct vsock_sock *vsk)
+{
+	struct sockaddr_vm *old;
+
+	old = rcu_access_pointer(vsk->cached_remote_addr);
+	rcu_assign_pointer(vsk->cached_remote_addr, NULL);
+	synchronize_rcu();
+	kfree(old);
+
+	return 0;
+}
 
 /**** CORE ****/
 
