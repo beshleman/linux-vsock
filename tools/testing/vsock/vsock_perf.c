@@ -24,6 +24,7 @@
 #define DEFAULT_VSOCK_BUF_BYTES (256 * 1024)
 #define DEFAULT_RCVLOWAT_BYTES	1
 #define DEFAULT_PORT		1234
+#define VSOCK_DGRAM_BYTES_MAX	(64 * 1024)
 
 #define BYTES_PER_GB		(1024 * 1024 * 1024ULL)
 #define NSEC_PER_SEC		(1000000000ULL)
@@ -93,7 +94,7 @@ static void vsock_increase_buf_size(int fd)
 		error("setsockopt(SO_VM_SOCKETS_BUFFER_SIZE)");
 }
 
-static int vsock_connect(unsigned int cid, unsigned int port)
+static int vsock_connect(unsigned int cid, unsigned int port, int sotype)
 {
 	union {
 		struct sockaddr sa;
@@ -107,7 +108,7 @@ static int vsock_connect(unsigned int cid, unsigned int port)
 	};
 	int fd;
 
-	fd = socket(AF_VSOCK, SOCK_STREAM, 0);
+	fd = socket(AF_VSOCK, sotype, 0);
 
 	if (fd < 0) {
 		perror("socket");
@@ -129,7 +130,7 @@ static float get_gbps(unsigned long bits, time_t ns_delta)
 	       ((float)ns_delta / NSEC_PER_SEC);
 }
 
-static void run_receiver(unsigned long rcvlowat_bytes)
+static void run_receiver(unsigned long rcvlowat_bytes, size_t to_recv_bytes, int sotype)
 {
 	unsigned int read_cnt;
 	time_t rx_begin_ns;
@@ -161,7 +162,7 @@ static void run_receiver(unsigned long rcvlowat_bytes)
 	printf("vsock buffer %lu bytes\n", vsock_buf_bytes);
 	printf("SO_RCVLOWAT %lu bytes\n", rcvlowat_bytes);
 
-	fd = socket(AF_VSOCK, SOCK_STREAM, 0);
+	fd = socket(AF_VSOCK, sotype, 0);
 
 	if (fd < 0)
 		error("socket");
@@ -169,20 +170,24 @@ static void run_receiver(unsigned long rcvlowat_bytes)
 	if (bind(fd, &addr.sa, sizeof(addr.svm)) < 0)
 		error("bind");
 
-	if (listen(fd, 1) < 0)
-		error("listen");
+	if (sotype != SOCK_DGRAM) {
+		if (listen(fd, 1) < 0)
+			error("listen");
 
-	client_fd = accept(fd, &clientaddr.sa, &clientaddr_len);
+		client_fd = accept(fd, &clientaddr.sa, &clientaddr_len);
 
-	if (client_fd < 0)
-		error("accept");
+		if (client_fd < 0)
+			error("accept");
 
-	vsock_increase_buf_size(client_fd);
+		vsock_increase_buf_size(client_fd);
 
-	if (setsockopt(client_fd, SOL_SOCKET, SO_RCVLOWAT,
-		       &rcvlowat_bytes,
-		       sizeof(rcvlowat_bytes)))
-		error("setsockopt(SO_RCVLOWAT)");
+		if (setsockopt(client_fd, SOL_SOCKET, SO_RCVLOWAT,
+			       &rcvlowat_bytes,
+			       sizeof(rcvlowat_bytes)))
+			error("setsockopt(SO_RCVLOWAT)");
+	} else {
+		client_fd = fd;
+	}
 
 	data = malloc(buf_size_bytes);
 
@@ -235,6 +240,9 @@ static void run_receiver(unsigned long rcvlowat_bytes)
 
 		if (fds.revents & (POLLHUP | POLLRDHUP))
 			break;
+
+		if (sotype == SOCK_DGRAM && total_recv > to_recv_bytes)
+			break;
 	}
 
 	printf("total bytes received: %zu\n", total_recv);
@@ -249,7 +257,7 @@ static void run_receiver(unsigned long rcvlowat_bytes)
 	close(fd);
 }
 
-static void run_sender(int peer_cid, unsigned long to_send_bytes)
+static void run_sender(int peer_cid, unsigned long to_send_bytes, int sotype)
 {
 	time_t tx_begin_ns;
 	time_t tx_total_ns;
@@ -262,10 +270,17 @@ static void run_sender(int peer_cid, unsigned long to_send_bytes)
 	printf("Send %lu bytes\n", to_send_bytes);
 	printf("TX buffer %lu bytes\n", buf_size_bytes);
 
-	fd = vsock_connect(peer_cid, port);
+	fd = vsock_connect(peer_cid, port, sotype);
 
 	if (fd < 0)
 		exit(EXIT_FAILURE);
+
+	if (sotype == SOCK_DGRAM && buf_size_bytes > VSOCK_DGRAM_BYTES_MAX) {
+		printf("dgram tx buffer (%lu) greater than dgram packet size max "
+		       "(%u), setting buffer to %u\n",
+		       buf_size_bytes, VSOCK_DGRAM_BYTES_MAX, VSOCK_DGRAM_BYTES_MAX);
+		buf_size_bytes = VSOCK_DGRAM_BYTES_MAX;
+	}
 
 	data = malloc(buf_size_bytes);
 
@@ -338,6 +353,11 @@ static const struct option longopts[] = {
 		.has_arg = required_argument,
 		.val = 'R',
 	},
+	{
+		.name = "dgram",
+		.has_arg = no_argument,
+		.val = 'D',
+	},
 	{},
 };
 
@@ -355,11 +375,13 @@ static void usage(void)
 	       "                                <cid> of the receiver to connect to\n"
 	       "  --port     <port>		Port (default %d)\n"
 	       "  --bytes    <bytes>KMG		Bytes to send (default %d)\n"
+	       "				For dgram receivers, how many bytes to receive\n"
 	       "  --buf-size <bytes>KMG		Data buffer size (default %d). In sender mode\n"
 	       "                                it is the buffer size, passed to 'write()'. In\n"
 	       "                                receiver mode it is the buffer size passed to 'read()'.\n"
 	       "  --vsk-size <bytes>KMG		Socket buffer size (default %d)\n"
 	       "  --rcvlowat <bytes>KMG		SO_RCVLOWAT value (default %d)\n"
+	       "  --dgram 			Use SOCK_DGRAM instead of SOCK_STREAM\n"
 	       "\n", DEFAULT_PORT, DEFAULT_TO_SEND_BYTES,
 	       DEFAULT_BUF_SIZE_BYTES, DEFAULT_VSOCK_BUF_BYTES,
 	       DEFAULT_RCVLOWAT_BYTES);
@@ -385,6 +407,7 @@ int main(int argc, char **argv)
 	unsigned long rcvlowat_bytes = DEFAULT_RCVLOWAT_BYTES;
 	int peer_cid = -1;
 	bool sender = false;
+	int sotype = SOCK_STREAM;
 
 	while (1) {
 		int opt = getopt_long(argc, argv, optstring, longopts, NULL);
@@ -412,6 +435,9 @@ int main(int argc, char **argv)
 			peer_cid = strtolx(optarg);
 			sender = true;
 			break;
+		case 'D': /* The socket is of type SOCK_DGRAM. */
+			sotype = SOCK_DGRAM;
+			break;
 		case 'H': /* Help. */
 			usage();
 			break;
@@ -421,9 +447,9 @@ int main(int argc, char **argv)
 	}
 
 	if (!sender)
-		run_receiver(rcvlowat_bytes);
+		run_receiver(rcvlowat_bytes, to_send_bytes, sotype);
 	else
-		run_sender(peer_cid, to_send_bytes);
+		run_sender(peer_cid, to_send_bytes, sotype);
 
 	return 0;
 }
