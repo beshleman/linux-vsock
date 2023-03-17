@@ -219,6 +219,7 @@ bool virtio_transport_stream_allow(u32 cid, u32 port);
 int virtio_transport_dgram_bind(struct vsock_sock *vsk,
 				struct sockaddr_vm *addr);
 bool virtio_transport_dgram_allow(u32 cid, u32 port);
+s64 virtio_transport_dgram_has_data(struct vsock_sock *vsk);
 
 int virtio_transport_connect(struct vsock_sock *vsk);
 

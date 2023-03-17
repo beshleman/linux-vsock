@@ -125,6 +125,7 @@ struct vsock_transport {
 	int (*dgram_enqueue)(struct vsock_sock *, struct sockaddr_vm *,
 			     struct msghdr *, size_t len);
 	bool (*dgram_allow)(u32 cid, u32 port);
+	s64 (*dgram_has_data)(struct vsock_sock *);
 
 	/* STREAM. */
 	/* TODO: stream_bind() */

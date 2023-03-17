@@ -640,10 +640,11 @@ out:
 	return ret;
 }
 
-static s64 virtio_transport_dgram_has_data(struct vsock_sock *vsk)
+s64 virtio_transport_dgram_has_data(struct vsock_sock *vsk)
 {
 	return virtio_transport_stream_has_data(vsk);
 }
+EXPORT_SYMBOL_GPL(virtio_transport_dgram_has_data);
 
 int
 virtio_transport_seqpacket_enqueue(struct vsock_sock *vsk,

@@ -1032,6 +1032,7 @@ out:
 static __poll_t vsock_poll(struct file *file, struct socket *sock,
 			       poll_table *wait)
 {
+	const struct vsock_transport *transport;
 	struct sock *sk;
 	__poll_t mask;
 	struct vsock_sock *vsk;
@@ -1060,13 +1061,18 @@ static __poll_t vsock_poll(struct file *file, struct socket *sock,
 		mask |= EPOLLRDHUP;
 	}
 
+	lock_sock(sk);
+
+	transport = vsk->transport;
+
 	if (sock->type == SOCK_DGRAM) {
 		/* For datagram sockets we can read if there is something in
 		 * the queue and write as long as the socket isn't shutdown for
 		 * sending.
 		 */
 		if (!skb_queue_empty_lockless(&sk->sk_receive_queue) ||
-		    (sk->sk_shutdown & RCV_SHUTDOWN)) {
+		    (sk->sk_shutdown & RCV_SHUTDOWN) ||
+		    (transport && transport->dgram_has_data(vsk))) {
 			mask |= EPOLLIN | EPOLLRDNORM;
 		}
 
@@ -1074,12 +1080,6 @@ static __poll_t vsock_poll(struct file *file, struct socket *sock,
 			mask |= EPOLLOUT | EPOLLWRNORM | EPOLLWRBAND;
 
 	} else if (sock_type_connectible(sk->sk_type)) {
-		const struct vsock_transport *transport;
-
-		lock_sock(sk);
-
-		transport = vsk->transport;
-
 		/* Listening sockets that have connections in their accept
 		 * queue can be read.
 		 */
@@ -1140,9 +1140,9 @@ static __poll_t vsock_poll(struct file *file, struct socket *sock,
 				mask |= EPOLLOUT | EPOLLWRNORM;
 
 		}
-
-		release_sock(sk);
 	}
+
+	release_sock(sk);
 
 	return mask;
 }
