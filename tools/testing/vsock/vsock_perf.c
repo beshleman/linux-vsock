@@ -199,7 +199,7 @@ static void run_receiver(unsigned long rcvlowat_bytes, size_t to_recv_bytes, int
 	read_cnt = 0;
 	in_read_ns = 0;
 	total_recv = 0;
-	rx_begin_ns = current_nsec();
+	rx_begin_ns = 0;
 
 	while (1) {
 		struct pollfd fds = { 0 };
@@ -221,6 +221,8 @@ static void run_receiver(unsigned long rcvlowat_bytes, size_t to_recv_bytes, int
 			time_t t;
 
 			t = current_nsec();
+			if (rx_begin_ns == 0)
+				rx_begin_ns = t;
 			bytes_read = read(fds.fd, data, buf_size_bytes);
 			in_read_ns += (current_nsec() - t);
 			read_cnt++;
