@@ -1254,8 +1254,8 @@ virtio_transport_recv_enqueue(struct vsock_sock *vsk,
 	 * Do not copy datagrams, as each receive operation is expected to be
 	 * one and only one packet.
 	 */
-	if (len <= GOOD_COPY_LEN && !skb_queue_empty(&vvs->rx_queue) &&
-	    le16_to_cpu(hdr->type) != VIRTIO_VSOCK_TYPE_DGRAM) {
+
+	if (len <= GOOD_COPY_LEN && !skb_queue_empty(&vvs->rx_queue)) {
 		struct virtio_vsock_hdr *last_hdr;
 		struct sk_buff *last_skb;
 
