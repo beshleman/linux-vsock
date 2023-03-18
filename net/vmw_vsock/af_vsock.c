@@ -1254,6 +1254,10 @@ static int vsock_dgram_connect(struct socket *sock,
 		return -EINVAL;
 
 	lock_sock(sk);
+	if (sock->state == SS_CONNECTED) {
+		err = -EISCONN;
+		goto out;
+	}
 
 	err = vsock_auto_bind(vsk);
 	if (err)
