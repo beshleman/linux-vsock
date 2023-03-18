@@ -559,73 +559,6 @@ virtio_transport_seqpacket_dequeue(struct vsock_sock *vsk,
 }
 EXPORT_SYMBOL_GPL(virtio_transport_seqpacket_dequeue);
 
-static int
-virtio_transport_dgram_do_dequeue(struct vsock_sock *vsk,
-				  struct msghdr *msg, size_t len,
-				  int flags)
-{
-	struct virtio_vsock_sock *vvs = vsk->trans;
-	struct sk_buff *skb;
-	int bytes;
-	int ret;
-
-	WARN_ON(len == 0);
-
-	/* sk_lock is held by caller so no one else can dequeue. We do not
-	 * requeue upon failure or otherwise use the queue later, so we are
-	 * free to release the rx_lock after getting the skb.
-	 */
-	spin_lock_bh(&vvs->rx_lock);
-	skb = __skb_dequeue(&vvs->rx_queue);
-	spin_unlock_bh(&vvs->rx_lock);
-	if (!skb)
-		return 0;
-
-	/* If the user buffer is too short then truncate the message and set
-	 * MSG_TRUNC. The remainder will be discarded when the skb is freed.
-	 */
-	if (len < skb->len) {
-		bytes = len;
-		msg->msg_flags |= MSG_TRUNC;
-	} else {
-		bytes = skb->len;
-	}
-
-	ret = memcpy_to_msg(msg, skb->data, bytes);
-	if (ret)
-		goto out;
-
-	/* According to manual recv(2): when MSG_TRUNC is set "return the real
-	 * length of the packet or datagram, even when it was longer than the
-	 * passed buffer
-	 */
-	if (flags & MSG_TRUNC)
-		ret = skb->len;
-	else
-		ret = bytes;
-
-	if (msg->msg_name) {
-		/* Provide the address of the sender. */
-		DECLARE_SOCKADDR(struct sockaddr_vm *, vm_addr, msg->msg_name);
-
-		vsock_addr_init(vm_addr, le64_to_cpu(virtio_vsock_hdr(skb)->src_cid),
-				le32_to_cpu(virtio_vsock_hdr(skb)->src_port));
-		msg->msg_namelen = sizeof(*vm_addr);
-	}
-
-out:
-	/* Because we are using the entire skb unconditionally and not saving
-	 * it for future reading after partial reads, we must skb_pull() the
-	 * entire length of the skb before doing any accounting with
-	 * virtio_transport_dec_rx_pkt(). Otherwise, rx_bytes will be
-	 * miscalculated.
-	 */
-	skb_pull(skb, skb->len);
-	virtio_transport_dec_rx_pkt(vvs, skb);
-	consume_skb(skb);
-	return ret;
-}
-
 s64 virtio_transport_dgram_has_data(struct vsock_sock *vsk)
 {
 	return virtio_transport_stream_has_data(vsk);
@@ -657,59 +590,55 @@ virtio_transport_dgram_dequeue(struct vsock_sock *vsk,
 			       struct msghdr *msg,
 			       size_t len, int flags)
 {
+	struct sk_buff *skb;
 	struct sock *sk;
-	long timeout;
+	size_t bytes;
 	int err;
 
-	DEFINE_WAIT(wait);
-
-	if (flags & MSG_OOB || flags & MSG_ERRQUEUE || flags & MSG_PEEK)
+	if (flags & MSG_OOB || flags & MSG_ERRQUEUE)
 		return -EOPNOTSUPP;
 
-	if (len == 0)
-		return 0;
-
 	sk = sk_vsock(vsk);
-	timeout = sock_rcvtimeo(sk, flags & MSG_DONTWAIT);
+	err = 0;
 
-	while (1) {
-		s64 ready;
+	skb = skb_recv_datagram(sk, flags, &err);
+	if (!skb)
+		goto out;
 
-		prepare_to_wait(sk_sleep(sk), &wait, TASK_INTERRUPTIBLE);
-		ready = virtio_transport_dgram_has_data(vsk);
-
-		if (ready == 0) {
-			if (timeout == 0) {
-				err = -EAGAIN;
-				finish_wait(sk_sleep(sk), &wait);
-				break;
-			}
-
-			timeout = schedule_timeout(timeout);
-
-			if (signal_pending(current)) {
-				err = sock_intr_errno(timeout);
-				finish_wait(sk_sleep(sk), &wait);
-				break;
-			} else if (timeout == 0) {
-				err = -EAGAIN;
-				finish_wait(sk_sleep(sk), &wait);
-				break;
-			}
-		} else {
-			finish_wait(sk_sleep(sk), &wait);
-
-			if (ready < 0) {
-				WARN_ONCE(1, "vsock reported negative ready rx bytes\n");
-				err = -EFAULT;
-				goto out;
-			}
-
-			err = virtio_transport_dgram_do_dequeue(vsk, msg, len, flags);
-			break;
-		}
+	/* If the user buffer is too short then truncate the message and set
+	 * MSG_TRUNC. The remainder will be discarded when the skb is freed.
+	 */
+	if (len < skb->len) {
+		bytes = len;
+		msg->msg_flags |= MSG_TRUNC;
+	} else {
+		bytes = skb->len;
 	}
+
+	/* Copy to msg from skb->data.
+	 * virtio_vsock_alloc_skb() should have already set
+	 * the skb pointers correctly. That is, skb->data
+	 * should not still be at skb->head.
+	 */
+	WARN_ON(skb->data == skb->head);
+	err = skb_copy_datagram_msg(skb, 0, msg, bytes);
+	if (err)
+		goto out;
+
+	/* On success, return the number bytes copied to the user buffer */
+	err = bytes;
+
+	if (msg->msg_name) {
+		/* Provide the address of the sender. */
+		DECLARE_SOCKADDR(struct sockaddr_vm *, vm_addr, msg->msg_name);
+
+		vsock_addr_init(vm_addr, le64_to_cpu(virtio_vsock_hdr(skb)->src_cid),
+				le32_to_cpu(virtio_vsock_hdr(skb)->src_port));
+		msg->msg_namelen = sizeof(*vm_addr);
+	}
+
 out:
+	skb_free_datagram(&vsk->sk, skb);
 	return err;
 }
 EXPORT_SYMBOL_GPL(virtio_transport_dgram_dequeue);
@@ -975,6 +904,7 @@ virtio_transport_dgram_enqueue(struct vsock_sock *vsk,
 	src_cid = t_ops->transport.get_local_cid();
 	src_port = vsk->local_addr.svm_port;
 
+	/* TODO: is this correct ? */
 	if (dgram_len > VIRTIO_VSOCK_MAX_PKT_BUF_SIZE)
 		return 0;
 
@@ -1286,6 +1216,25 @@ out:
 		kfree_skb(skb);
 }
 
+/* This function takes ownership of the skb.
+ *
+ * It either places the skb on the sk_receive_queue or frees it.
+ */
+static int
+virtio_transport_recv_dgram(struct sock *sk, struct sk_buff *skb)
+{
+	int err;
+
+	err = sock_queue_rcv_skb(sk, skb);
+	if (err < 0) {
+		kfree_skb(skb);
+		return err;
+	}
+
+	sk->sk_data_ready(sk);
+	return 0;
+}
+
 static int
 virtio_transport_recv_connected(struct sock *sk,
 				struct sk_buff *skb)
@@ -1293,12 +1242,6 @@ virtio_transport_recv_connected(struct sock *sk,
 	struct virtio_vsock_hdr *hdr = virtio_vsock_hdr(skb);
 	struct vsock_sock *vsk = vsock_sk(sk);
 	int err = 0;
-
-	if (le16_to_cpu(hdr->type) == VIRTIO_VSOCK_TYPE_DGRAM) {
-		virtio_transport_recv_enqueue(vsk, skb);
-		sk->sk_data_ready(sk);
-		return err;
-	}
 
 	switch (le16_to_cpu(hdr->op)) {
 	case VIRTIO_VSOCK_OP_RW:
@@ -1521,7 +1464,7 @@ void virtio_transport_recv_pkt(struct virtio_transport *t,
 	}
 
 	if (sk->sk_type == SOCK_DGRAM) {
-		virtio_transport_recv_connected(sk, skb);
+		virtio_transport_recv_dgram(sk, skb);
 		goto out;
 	}
 
