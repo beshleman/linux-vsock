@@ -264,28 +264,14 @@ static int virtio_transport_send_pkt_info(struct vsock_sock *vsk,
 	vvs = vsk->trans;
 
 	/* we can send less than pkt_len bytes */
-	if (pkt_len > VIRTIO_VSOCK_MAX_PKT_BUF_SIZE) {
-		if (info->type != VIRTIO_VSOCK_TYPE_DGRAM)
-			pkt_len = VIRTIO_VSOCK_MAX_PKT_BUF_SIZE;
-		else
-			return 0;
-	}
-
-	if (info->type != VIRTIO_VSOCK_TYPE_DGRAM) {
-		/* virtio_transport_get_credit might return less than pkt_len credit */
-		pkt_len = virtio_transport_get_credit(vvs, pkt_len);
-
-		/* Do not send zero length OP_RW pkt */
-		if (pkt_len == 0 && info->op == VIRTIO_VSOCK_OP_RW)
-			return pkt_len;
-	}
+	if (pkt_len > VIRTIO_VSOCK_MAX_PKT_BUF_SIZE)
+		pkt_len = VIRTIO_VSOCK_MAX_PKT_BUF_SIZE;
 
 	skb = virtio_transport_alloc_skb(info, pkt_len,
 					 src_cid, src_port,
 					 dst_cid, dst_port, &err);
 	if (!skb) {
-		if (info->type != VIRTIO_VSOCK_TYPE_DGRAM)
-			virtio_transport_put_credit(vvs, pkt_len);
+		virtio_transport_put_credit(vvs, pkt_len);
 		return err;
 	}
 
