@@ -231,9 +231,9 @@ void vsock_deliver_tap(struct sk_buff *build_skb(void *opaque), void *opaque);
 typedef int (vsock_send_fn)(int (*fn)(struct sk_buff *), struct sk_buff *skb, u32 cid);
 extern vsock_send_fn *__vsock_send_pkt;
 
+#ifdef CONFIG_VSOCKETS_DEV
 int vsock_dev_send_pkt(int (*send_pkt)(struct sk_buff *), struct sk_buff *skb, u32 dst_cid);
 
-#ifdef CONFIG_VSOCKETS_DEV
 /* FIXME: cleanup order of these */
 int vsock_dev_register(void);
 void vsock_dev_unregister(void);
