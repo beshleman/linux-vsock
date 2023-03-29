@@ -110,7 +110,7 @@ void vsock_dev_dec_skb(struct sk_buff *skb)
 		return;
 
 	if (vdev->transport->get_pending_tx(vdev) < vdev->dev->tx_queue_len)
-		netif_start_queue(vdev->dev);
+		netif_wake_queue(vdev->dev);
 }
 EXPORT_SYMBOL_GPL(vsock_dev_dec_skb);
 
