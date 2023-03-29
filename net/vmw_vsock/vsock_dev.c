@@ -35,7 +35,6 @@ static void vsock_dev_uninit(struct net_device *dev)
 static netdev_tx_t vsock_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	struct vsock_dev *vdev = netdev_priv(dev);
-	struct net_device_stats *stats = &dev->stats;
 	int inflight;
 
 	if (vdev->send_pkt(skb) < 0) {
