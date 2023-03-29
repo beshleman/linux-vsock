@@ -21,15 +21,15 @@ static const struct nla_policy vsock_policy[IFLA_VSOCK_MAX + 1] = {
 
 static int vsock_dev_init(struct net_device *dev)
 {
-	dev->lstats = netdev_alloc_pcpu_stats(struct pcpu_lstats);
-	if (!dev->lstats)
+	dev->tstats = netdev_alloc_pcpu_stats(struct pcpu_sw_netstats);
+	if (!dev->tstats)
 		return -ENOMEM;
 	return 0;
 }
 
 static void vsock_dev_uninit(struct net_device *dev)
 {
-	free_percpu(dev->lstats);
+	free_percpu(dev->tstats);
 }
 
 static netdev_tx_t vsock_dev_xmit(struct sk_buff *skb, struct net_device *dev)
@@ -39,12 +39,11 @@ static netdev_tx_t vsock_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 	int inflight;
 
 	if (vdev->send_pkt(skb) < 0) {
-		stats->tx_errors++;
+		dev->stats.tx_errors++;
 		return NETDEV_TX_OK;
 	}
 
-	stats->tx_packets++;
-	stats->tx_bytes += skb->len;
+	dev_sw_netstats_tx_add(dev, 1, skb->len);
 
 	/* Only increment inflight_skbs if send_pkt() succeeds in placing
 	 * skbs on the send queue.
@@ -59,20 +58,11 @@ static netdev_tx_t vsock_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 	return NETDEV_TX_OK;
 }
 
-static void
-vsock_dev_get_stats64(struct net_device *dev, struct rtnl_link_stats64 *stats)
-{
-	dev_lstats_read(dev, &stats->rx_packets, &stats->rx_bytes);
-
-	stats->tx_packets = 0;
-	stats->tx_bytes = 0;
-}
-
 static const struct net_device_ops vsock_dev_ops = {
 	.ndo_init = vsock_dev_init,
 	.ndo_uninit = vsock_dev_uninit,
 	.ndo_start_xmit = vsock_dev_xmit,
-	.ndo_get_stats64 = vsock_dev_get_stats64,
+	.ndo_get_stats64 = dev_get_tstats64,
 };
 
 static u32 always_on(struct net_device *dev)
