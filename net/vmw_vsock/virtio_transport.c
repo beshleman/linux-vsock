@@ -62,8 +62,6 @@ struct virtio_vsock {
 	bool event_run;
 	struct virtio_vsock_event event_list[8];
 
-	struct vsock_dev *vsock_dev;
-
 	u32 guest_cid;
 	bool seqpacket_allow;
 };
@@ -419,6 +417,35 @@ static void virtio_vsock_rx_done(struct virtqueue *vq)
 
 static bool virtio_transport_seqpacket_allow(u32 remote_cid);
 
+u32 virtio_transport_get_cid_from_skb(struct sk_buff *skb)
+{
+	return le64_to_cpu(virtio_vsock_hdr(skb)->dst_cid);
+}
+
+int virtio_transport_get_pending_tx(struct vsock_dev *vdev)
+{
+	struct virtio_vsock *vsock;
+	int len;
+
+	rcu_read_lock();
+	vsock = rcu_dereference(the_virtio_vsock);
+	if (!vsock) {
+		len = -ENODEV;
+		goto out_rcu;
+	}
+
+	/* We only need this bound to be approximate, so return the length
+	 * without acquiring the queue lock.
+	 *
+	 * With this, the len may shrink/grow to be NR_CPUS off.
+	 */
+	len = skb_queue_len_lockless(&vsock->send_pkt_queue);
+
+out_rcu:
+	rcu_read_unlock();
+	return len;
+}
+
 static struct virtio_transport virtio_transport = {
 	.transport = {
 		.module                   = THIS_MODULE,
@@ -461,6 +488,9 @@ static struct virtio_transport virtio_transport = {
 		.notify_send_pre_enqueue  = virtio_transport_notify_send_pre_enqueue,
 		.notify_send_post_enqueue = virtio_transport_notify_send_post_enqueue,
 		.notify_buffer_size       = virtio_transport_notify_buffer_size,
+
+		.get_pending_tx = virtio_transport_get_pending_tx,
+		.dev_send_pkt = virtio_transport_send_pkt,
 	},
 
 	.send_pkt = virtio_transport_send_pkt,

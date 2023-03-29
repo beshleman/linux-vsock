@@ -32,6 +32,45 @@ out:
 }
 EXPORT_SYMBOL_GPL(vsock_dev_find_dev);
 
+int vsock_dev_assign_transport(struct vsock_sock *vsk, const struct vsock_transport *transport)
+{
+	unsigned int remote_cid = vsk->remote_addr.svm_cid;
+	struct vsock_dev *vdev;
+
+	/* The transport doesn't support devices */
+	if (!transport->dev_send_pkt)
+		return 0;
+
+	if (!try_module_get(transport->module))
+		return -ENODEV;
+
+	vdev = vsock_dev_find_dev(remote_cid);
+	if (!vdev)
+		return 0;
+
+	vdev->transport = transport;
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(vsock_dev_assign_transport);
+
+void vsock_dev_deassign_transport(struct vsock_sock *vsk, const struct vsock_transport *transport)
+{
+	unsigned int remote_cid = vsk->remote_addr.svm_cid;
+	struct vsock_dev *vdev;
+
+	if (!transport->dev_send_pkt)
+		return;
+
+	vdev = vsock_dev_find_dev(remote_cid);
+	if (!vdev)
+		return;
+
+	module_put(vdev->transport->module);
+	vdev->transport = NULL;
+}
+EXPORT_SYMBOL_GPL(vsock_dev_deassign_transport);
+
 int vsock_dev_send_pkt(int (*send_pkt)(struct sk_buff *), struct sk_buff *skb, u32 dst_cid)
 {
 	struct vsock_dev *vdev;
@@ -39,6 +78,11 @@ int vsock_dev_send_pkt(int (*send_pkt)(struct sk_buff *), struct sk_buff *skb, u
 	int err;
 
 	if ((vdev = vsock_dev_find_dev(dst_cid)) != NULL) {
+		if (!vdev->transport) {
+			pr_err_once("vsock dev tried to use unsupported vsock transport\n");
+			return send_pkt(skb);
+		}
+
 		skb->dev = vdev->dev;
 		skb->protocol = htons(ETH_P_VSOCK);
 		len = skb->len;
@@ -60,10 +104,10 @@ void vsock_dev_dec_skb(struct sk_buff *skb)
 		return;
 
 	vdev = netdev_priv(skb->dev);
-	if (!vdev)
+	if (!vdev || !vdev->transport)
 		return;
 
-	if (atomic_dec_and_test(&vdev->inflight_skbs))
+	if (vdev->transport->get_pending_tx(vdev) < vdev->dev->tx_queue_len)
 		netif_start_queue(vdev->dev);
 }
 EXPORT_SYMBOL_GPL(vsock_dev_dec_skb);

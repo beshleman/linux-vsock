@@ -414,6 +414,7 @@ static void vsock_deassign_transport(struct vsock_sock *vsk)
 	if (!vsk->transport)
 		return;
 
+	vsock_dev_deassign_transport(vsk, vsk->transport);
 	vsk->transport->destruct(vsk);
 	module_put(vsk->transport->module);
 	vsk->transport = NULL;
@@ -501,6 +502,13 @@ int vsock_assign_transport(struct vsock_sock *vsk, struct vsock_sock *psk)
 
 	ret = new_transport->init(vsk, psk);
 	if (ret) {
+		module_put(new_transport->module);
+		return ret;
+	}
+
+	ret = vsock_dev_assign_transport(vsk, new_transport);
+	if (ret) {
+		new_transport->destruct(vsk);
 		module_put(new_transport->module);
 		return ret;
 	}

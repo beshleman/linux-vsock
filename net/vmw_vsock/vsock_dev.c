@@ -11,8 +11,6 @@
 #include <uapi/linux/if_link.h>
 #include <uapi/linux/if_ether.h>
 
-#define VSOCK_DEV_MAX_INFLIGHT_SKB 1024
-
 extern struct list_head vsock_dev_table[];
 
 static const struct nla_policy vsock_policy[IFLA_VSOCK_MAX + 1] = {
@@ -29,29 +27,28 @@ static int vsock_dev_init(struct net_device *dev)
 
 static void vsock_dev_uninit(struct net_device *dev)
 {
+	struct vsock_dev *vdev = netdev_priv(dev);
+
 	free_percpu(dev->tstats);
+
+	module_put(vdev->transport->module);
+	vdev->transport = NULL;
 }
 
 static netdev_tx_t vsock_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	struct vsock_dev *vdev = netdev_priv(dev);
-	int inflight;
 
-	if (vdev->send_pkt(skb) < 0) {
+	if (vdev->transport->dev_send_pkt(skb) < 0) {
+		/* This a hard error and implies a bug in queue management. */
+		pr_err_ratelimited("vsock transport failing to send pkt, stopping queue...\n");
 		dev->stats.tx_errors++;
-		return NETDEV_TX_OK;
+		return NETDEV_TX_BUSY;
 	}
 
 	dev_sw_netstats_tx_add(dev, 1, skb->len);
 
-	/* Only increment inflight_skbs if send_pkt() succeeds in placing
-	 * skbs on the send queue.
-	 *
-	 * In accordance with that, inflight_skbs needs only to be decremented
-	 * when skbs are removed from the send queue permanently.
-	 */
-	inflight = atomic_inc_return(&vdev->inflight_skbs);
-	if (inflight >= VSOCK_DEV_MAX_INFLIGHT_SKB)
+	if (vdev->transport->get_pending_tx(vdev) >= vdev->dev->tx_queue_len)
 		netif_stop_queue(vdev->dev);
 
 	return NETDEV_TX_OK;
@@ -119,7 +116,6 @@ static int vsock_dev_newlink(struct net *src_net, struct net_device *dev,
 			return -EEXIST;
 		vdev->cid = cid;
 	}
-	vdev->send_pkt = NULL;
 	vdev->dev = dev;
 
 	ret = register_netdevice(dev);
