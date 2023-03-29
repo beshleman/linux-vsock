@@ -36,14 +36,16 @@ int vsock_dev_send_pkt(int (*send_pkt)(struct sk_buff *), struct sk_buff *skb, u
 {
 	struct vsock_dev *vdev;
 	int len;
+	int err;
 
 	if ((vdev = vsock_dev_find_dev(dst_cid)) != NULL) {
-		len = skb->len;
 		skb->dev = vdev->dev;
 		skb->protocol = htons(ETH_P_VSOCK);
-		vdev->send_pkt = send_pkt;
-		dev_queue_xmit(skb);
-		return len;
+		len = skb->len;
+		err = dev_queue_xmit(skb);
+		if (likely(err == 0))
+			return len;
+		return net_xmit_errno(err);
 	}
 
 	return send_pkt(skb);
