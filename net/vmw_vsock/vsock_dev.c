@@ -118,11 +118,13 @@ static int vsock_dev_newlink(struct net *src_net, struct net_device *dev,
 			return -EEXIST;
 		vdev->cid = cid;
 	}
-	vdev->dev = dev;
 
+	vdev->dev = dev;
 	ret = register_netdevice(dev);
-	if (ret < 0)
+	if (ret < 0) {
+		vdev->dev = NULL;
 		return ret;
+	}
 
 	vsock_dev_add_dev(vdev);
 	return 0;
