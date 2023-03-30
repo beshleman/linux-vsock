@@ -38,17 +38,19 @@ int vsock_dev_assign_transport(struct vsock_sock *vsk, const struct vsock_transp
 	struct vsock_dev *vdev;
 
 	/* The transport doesn't support devices */
-	if (!transport->dev_send_pkt)
+	if (!transport->dev_send_pkt || !transport->get_pending_tx)
 		return 0;
-
-	if (!try_module_get(transport->module))
-		return -ENODEV;
 
 	vdev = vsock_dev_find_dev(remote_cid);
 	if (!vdev)
 		return 0;
 
-	vdev->transport = transport;
+	if (!vdev->transport) {
+		if (!try_module_get(transport->module))
+			return -ENODEV;
+
+		vdev->transport = transport;
+	}
 
 	return 0;
 }
@@ -64,7 +66,8 @@ void vsock_dev_deassign_transport(struct vsock_sock *vsk)
 		return;
 
 	if (vdev->transport) {
-		module_put(vdev->transport->module);
+		if (vdev->transport->module)
+			module_put(vdev->transport->module);
 		vdev->transport = NULL;
 	}
 }

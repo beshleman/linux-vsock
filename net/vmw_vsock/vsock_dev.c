@@ -40,18 +40,26 @@ static void vsock_dev_uninit(struct net_device *dev)
 static netdev_tx_t vsock_dev_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	struct vsock_dev *vdev = netdev_priv(dev);
+	const struct vsock_transport *transport = vdev->transport;
 
-	if (vdev->transport->dev_send_pkt(skb) < 0) {
+	if (!transport) {
 		/* This a hard error and implies a bug in queue management. */
-		pr_err_ratelimited("vsock transport failing to send pkt, stopping queue...\n");
+		pr_err_ratelimited("vsock transport does not support vsock dev, stopping queue.\n");
+		dev->stats.tx_errors++;
+		return NETDEV_TX_BUSY;
+	}
+
+	if (transport->dev_send_pkt(skb) < 0) {
+		/* This a hard error and implies a bug in queue management. */
+		pr_err_ratelimited("vsock transport failing to send pkt, stopping queue.\n");
 		dev->stats.tx_errors++;
 		return NETDEV_TX_BUSY;
 	}
 
 	dev_sw_netstats_tx_add(dev, 1, skb->len);
 
-	if (vdev->transport->get_pending_tx(vdev) >= vdev->dev->tx_queue_len)
-		netif_stop_queue(vdev->dev);
+	if (transport->get_pending_tx(vdev) >= dev->tx_queue_len)
+		netif_stop_queue(dev);
 
 	return NETDEV_TX_OK;
 }
