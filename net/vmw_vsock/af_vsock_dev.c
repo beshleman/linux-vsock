@@ -54,20 +54,19 @@ int vsock_dev_assign_transport(struct vsock_sock *vsk, const struct vsock_transp
 }
 EXPORT_SYMBOL_GPL(vsock_dev_assign_transport);
 
-void vsock_dev_deassign_transport(struct vsock_sock *vsk, const struct vsock_transport *transport)
+void vsock_dev_deassign_transport(struct vsock_sock *vsk)
 {
 	unsigned int remote_cid = vsk->remote_addr.svm_cid;
 	struct vsock_dev *vdev;
-
-	if (!transport->dev_send_pkt)
-		return;
 
 	vdev = vsock_dev_find_dev(remote_cid);
 	if (!vdev)
 		return;
 
-	module_put(vdev->transport->module);
-	vdev->transport = NULL;
+	if (vdev->transport) {
+		module_put(vdev->transport->module);
+		vdev->transport = NULL;
+	}
 }
 EXPORT_SYMBOL_GPL(vsock_dev_deassign_transport);
 

@@ -250,6 +250,6 @@ void vsock_dev_dec_skb(struct sk_buff *skb);
 struct vsock_dev *vsock_dev_find_dev(u32 cid);
 int vsock_dev_send_pkt(int (*send_pkt)(struct sk_buff *), struct sk_buff *skb, u32 dst_cid);
 int vsock_dev_assign_transport(struct vsock_sock *vsk, const struct vsock_transport *transport);
-void vsock_dev_deassign_transport(struct vsock_sock *vsk, const struct vsock_transport *transport);
+void vsock_dev_deassign_transport(struct vsock_sock *vsk);
 
 #endif /* __AF_VSOCK_H__ */
