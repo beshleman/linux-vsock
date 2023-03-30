@@ -24,6 +24,7 @@
 #define DEFAULT_VSOCK_BUF_BYTES (256 * 1024)
 #define DEFAULT_RCVLOWAT_BYTES	1
 #define DEFAULT_PORT		1234
+#define DEFAULT_VSOCK_CONNECT_TIMEOUT 10
 #define VSOCK_DGRAM_BYTES_MAX	(64 * 1024)
 
 #define BYTES_PER_GB		(1024 * 1024 * 1024ULL)
@@ -106,6 +107,7 @@ static int vsock_connect(unsigned int cid, unsigned int port, int sotype)
 			.svm_cid = cid,
 		},
 	};
+	struct timespec timeout = {0};
 	int fd;
 
 	fd = socket(AF_VSOCK, sotype, 0);
@@ -115,11 +117,21 @@ static int vsock_connect(unsigned int cid, unsigned int port, int sotype)
 		return -1;
 	}
 
+	if (sotype != SOCK_DGRAM) {
+		timeout.tv_sec = DEFAULT_VSOCK_CONNECT_TIMEOUT;
+		if (setsockopt(fd, AF_VSOCK, SO_VM_SOCKETS_CONNECT_TIMEOUT,
+			       &timeout, sizeof(timeout))) {
+			error("setsockopt(SO_VM_SOCKETS_CONNECT_TIMEOUT)");
+		}
+	}
+
 	if (connect(fd, &addr.sa, sizeof(addr.svm)) < 0) {
 		perror("connect");
 		close(fd);
 		return -1;
 	}
+
+	printf("Connected\n");
 
 	return fd;
 }
