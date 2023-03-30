@@ -31,8 +31,10 @@ static void vsock_dev_uninit(struct net_device *dev)
 
 	free_percpu(dev->tstats);
 
-	module_put(vdev->transport->module);
-	vdev->transport = NULL;
+	if (vdev->transport) {
+		module_put(vdev->transport->module);
+		vdev->transport = NULL;
+	}
 }
 
 static netdev_tx_t vsock_dev_xmit(struct sk_buff *skb, struct net_device *dev)
