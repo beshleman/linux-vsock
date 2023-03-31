@@ -164,7 +164,7 @@ static int vsock_dev_fill_info(struct sk_buff *skb, const struct net_device *dev
 
 static size_t vsock_dev_get_size(const struct net_device *dev)
 {
-	return nla_total_size(sizeof(u32));	/* IFLA_VSOCK_MASTER  */
+	return nla_total_size(sizeof(u32));	/* IFLA_VSOCK_CID  */
 }
 
 static struct rtnl_link_ops vsock_dev_link_ops __read_mostly = {
