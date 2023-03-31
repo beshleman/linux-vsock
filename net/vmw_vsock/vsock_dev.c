@@ -100,9 +100,13 @@ static int vsock_dev_changelink(struct net_device *dev, struct nlattr *tb[],
 
 	if (data && data[IFLA_VSOCK_CID]) {
 		cid = nla_get_u32(data[IFLA_VSOCK_CID]);
+		if (cid == VMADDR_CID_ANY)
+			return -EINVAL;
 		if (vsock_dev_find_dev(cid))
 			return -EEXIST;
+		vsock_dev_del_dev(vdev);
 		vdev->cid = cid;
+		vsock_dev_add_dev(vdev);
 	}
 
 	return 0;
@@ -122,6 +126,8 @@ static int vsock_dev_newlink(struct net *src_net, struct net_device *dev,
 	vdev->cid = VMADDR_CID_ANY;
 	if (data && data[IFLA_VSOCK_CID]) {
 		cid = nla_get_u32(data[IFLA_VSOCK_CID]);
+		if (cid == VMADDR_CID_ANY)
+			return -EINVAL;
 		if (vsock_dev_find_dev(cid))
 			return -EEXIST;
 		vdev->cid = cid;

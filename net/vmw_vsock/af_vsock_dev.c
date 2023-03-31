@@ -4,14 +4,32 @@
 #define VSOCK_DEV_HASH_SIZE 256U
 #define VSOCK_DEV_HASH(cid) ((cid) % VSOCK_DEV_HASH_SIZE)
 
+/* This table must be read in an RCU read-side section */
 struct list_head vsock_dev_table[VSOCK_DEV_HASH_SIZE];
 EXPORT_SYMBOL_GPL(vsock_dev_table);
 
+/* Protects all writes of vsock_dev_table.
+ *
+ * It is *NOT* required for reads (which *must* occur
+ * in an RCU read-side section).
+ */
+static DEFINE_SPINLOCK(vsock_dev_table_write_lock);
+
 void vsock_dev_add_dev(struct vsock_dev *vdev)
 {
+	spin_lock(&vsock_dev_table_write_lock);
 	list_add_tail_rcu(&vdev->table, &vsock_dev_table[VSOCK_DEV_HASH(vdev->cid)]);
+	spin_unlock(&vsock_dev_table_write_lock);
 }
 EXPORT_SYMBOL_GPL(vsock_dev_add_dev);
+
+void vsock_dev_del_dev(struct vsock_dev *vdev)
+{
+	spin_lock(&vsock_dev_table_write_lock);
+	list_del_rcu(&vdev->table);
+	spin_unlock(&vsock_dev_table_write_lock);
+}
+EXPORT_SYMBOL_GPL(vsock_dev_del_dev);
 
 struct vsock_dev *vsock_dev_find_dev(u32 cid)
 {

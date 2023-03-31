@@ -246,6 +246,7 @@ void vsock_dev_init_dev_table(void);
 void vsock_dev_deinit_dev_table(void);
 
 void vsock_dev_add_dev(struct vsock_dev *vdev);
+void vsock_dev_del_dev(struct vsock_dev *vdev);
 void vsock_dev_dec_skb(struct sk_buff *skb);
 struct vsock_dev *vsock_dev_find_dev(u32 cid);
 int vsock_dev_send_pkt(int (*send_pkt)(struct sk_buff *), struct sk_buff *skb, u32 dst_cid);
