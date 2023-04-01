@@ -1474,8 +1474,6 @@ int virtio_transport_purge_skbs(void *vsk, struct sk_buff_head *queue)
 		if (vsock_sk(skb->sk) != vsk)
 			continue;
 
-		vsock_dev_dec_skb(skb);
-
 		__skb_unlink(skb, queue);
 		__skb_queue_tail(&freeme, skb);
 

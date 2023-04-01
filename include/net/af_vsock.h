@@ -237,6 +237,7 @@ void vsock_deliver_tap(struct sk_buff *build_skb(void *opaque), void *opaque);
 
 struct vsock_dev {
 	struct list_head table;
+	int (*send_pkt)(struct sk_buff *skb);
 	struct net_device *dev;
 	const struct vsock_transport *transport;
 	u32 cid;

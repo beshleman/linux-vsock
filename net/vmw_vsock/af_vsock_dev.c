@@ -98,39 +98,23 @@ int vsock_dev_send_pkt(int (*send_pkt)(struct sk_buff *), struct sk_buff *skb, u
 	int err;
 
 	if ((vdev = vsock_dev_find_dev(dst_cid)) != NULL) {
-		if (!vdev->transport) {
-			pr_err_once("vsock dev tried to use unsupported vsock transport\n");
-			return send_pkt(skb);
-		}
-
+		if (vdev->send_pkt != send_pkt)
+			vdev->send_pkt = send_pkt;
 		skb->dev = vdev->dev;
 		skb->protocol = htons(ETH_P_VSOCK);
 		len = skb->len;
 		err = dev_queue_xmit(skb);
-		if (likely(err == 0))
+		if (likely(net_xmit_eval(err) == 0)) {
+			if (err == NET_XMIT_CN)
+				pr_warn_ratelimited("congestion detected on vsock qdisc, some packets may have been dropped\n");
 			return len;
-		return net_xmit_errno(err);
+		}
+		return -ENOMEM;
 	}
 
 	return send_pkt(skb);
 }
 EXPORT_SYMBOL_GPL(vsock_dev_send_pkt);
-
-void vsock_dev_dec_skb(struct sk_buff *skb)
-{
-	struct vsock_dev *vdev;
-
-	if (!skb->dev)
-		return;
-
-	vdev = netdev_priv(skb->dev);
-	if (!vdev || !vdev->transport)
-		return;
-
-	if (vdev->transport->get_pending_tx(vdev) < vdev->dev->tx_queue_len)
-		netif_wake_queue(vdev->dev);
-}
-EXPORT_SYMBOL_GPL(vsock_dev_dec_skb);
 
 void vsock_dev_init_dev_table(void)
 {

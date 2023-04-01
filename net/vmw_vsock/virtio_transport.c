@@ -125,6 +125,8 @@ virtio_transport_send_pkt_work(struct work_struct *work)
 		 * the vq
 		 */
 		if (ret < 0) {
+			if (skb->dev)
+				netif_stop_queue(skb->dev);
 			virtio_vsock_skb_queue_head(&vsock->send_pkt_queue, skb);
 			break;
 		}
@@ -269,7 +271,8 @@ static void virtio_transport_tx_work(struct work_struct *work)
 
 		virtqueue_disable_cb(vq);
 		while ((skb = virtqueue_get_buf(vq, &len)) != NULL) {
-			vsock_dev_dec_skb(skb);
+			if (skb->dev)
+				netif_wake_queue(skb->dev);
 			consume_skb(skb);
 			added = true;
 		}
@@ -488,9 +491,6 @@ static struct virtio_transport virtio_transport = {
 		.notify_send_pre_enqueue  = virtio_transport_notify_send_pre_enqueue,
 		.notify_send_post_enqueue = virtio_transport_notify_send_post_enqueue,
 		.notify_buffer_size       = virtio_transport_notify_buffer_size,
-
-		.get_pending_tx = virtio_transport_get_pending_tx,
-		.dev_send_pkt = virtio_transport_send_pkt,
 	},
 
 	.send_pkt = virtio_transport_send_pkt,
