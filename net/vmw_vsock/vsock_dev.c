@@ -144,6 +144,7 @@ static void vsock_dev_dellink(struct net_device *dev, struct list_head *head)
 	struct vsock_dev *vdev = netdev_priv(dev);
 
 	list_del_rcu(&vdev->table);
+	synchronize_rcu();
 	unregister_netdevice_queue(dev, head);
 }
 

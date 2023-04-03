@@ -20,6 +20,7 @@ void vsock_dev_add_dev(struct vsock_dev *vdev)
 	spin_lock(&vsock_dev_table_write_lock);
 	list_add_tail_rcu(&vdev->table, &vsock_dev_table[VSOCK_DEV_HASH(vdev->cid)]);
 	spin_unlock(&vsock_dev_table_write_lock);
+	synchronize_rcu();
 }
 EXPORT_SYMBOL_GPL(vsock_dev_add_dev);
 
@@ -28,6 +29,7 @@ void vsock_dev_del_dev(struct vsock_dev *vdev)
 	spin_lock(&vsock_dev_table_write_lock);
 	list_del_rcu(&vdev->table);
 	spin_unlock(&vsock_dev_table_write_lock);
+	synchronize_rcu();
 }
 EXPORT_SYMBOL_GPL(vsock_dev_del_dev);
 
