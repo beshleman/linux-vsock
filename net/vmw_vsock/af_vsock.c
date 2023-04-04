@@ -767,7 +767,7 @@ static struct sock *__vsock_create(struct net *net,
 	vsk = vsock_sk(sk);
 	vsock_addr_init(&vsk->local_addr, VMADDR_CID_ANY, VMADDR_PORT_ANY);
 	vsock_addr_init(&vsk->remote_addr, VMADDR_CID_ANY, VMADDR_PORT_ANY);
-
+	rcu_assign_pointer(vsk->cached_remote_addr, NULL);
 	sk->sk_destruct = vsock_sk_destruct;
 	sk->sk_backlog_rcv = vsock_queue_rcv_skb;
 	sock_reset_flag(sk, SOCK_DONE);
@@ -1159,6 +1159,7 @@ static int vsock_dgram_sendmsg(struct socket *sock, struct msghdr *msg,
 	struct sock *sk;
 	struct vsock_sock *vsk;
 	struct sockaddr_vm *remote_addr;
+	struct sockaddr_vm remote_addr_copy;
 	const struct vsock_transport *transport;
 
 	if (msg->msg_flags & MSG_OOB)
@@ -1207,17 +1208,30 @@ static int vsock_dgram_sendmsg(struct socket *sock, struct msghdr *msg,
 			goto out;
 		}
 	} else if (sock->state == SS_CONNECTED) {
-		remote_addr = &vsk->remote_addr;
-
-		if (remote_addr->svm_cid == VMADDR_CID_ANY)
-			remote_addr->svm_cid = transport->get_local_cid();
+		remote_addr = &remote_addr_copy;
+		vsock_get_cached_remote_addr(vsk, remote_addr);
 
 		/* XXX Should connect() or this function ensure remote_addr is
 		 * bound?
 		 */
-		if (!vsock_addr_bound(&vsk->remote_addr)) {
+		if (!vsock_addr_bound(remote_addr)) {
 			err = -EINVAL;
 			goto out;
+		}
+
+		if (remote_addr->svm_cid == VMADDR_CID_ANY) {
+			lock_sock(sk);
+			/* Update the CID */
+			vsk->remote_addr.svm_cid = transport->get_local_cid();
+
+			/* Update the cache */
+			err = vsock_update_cached_remote_addr(vsk);
+			release_sock(sk);
+			if (err)
+				goto out;
+
+			/* Retrieve the newest cache again */
+			vsock_get_cached_remote_addr(vsk, remote_addr);
 		}
 	} else {
 		err = -EINVAL;
@@ -1271,7 +1285,14 @@ static int vsock_dgram_connect(struct socket *sock,
 	}
 
 	memcpy(&vsk->remote_addr, remote_addr, sizeof(vsk->remote_addr));
+
 	sock->state = SS_CONNECTED;
+
+	err = vsock_update_cached_remote_addr(vsk);
+	if (err) {
+		sock->state = SS_UNCONNECTED;
+		goto out;
+	}
 
 out:
 	release_sock(sk);
