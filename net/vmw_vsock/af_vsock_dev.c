@@ -54,8 +54,13 @@ EXPORT_SYMBOL_GPL(vsock_dev_find_dev);
 
 int vsock_dev_assign_transport(struct vsock_sock *vsk, const struct vsock_transport *transport)
 {
-	unsigned int remote_cid = vsk->remote_addr.svm_cid;
+	unsigned int remote_cid;
 	struct vsock_dev *vdev;
+	int err;
+
+	err = vsock_remote_addr_cid(vsk, &remote_cid);
+	if (err < 0)
+		return err;
 
 	/* The transport doesn't support devices */
 	if (!transport->dev_send_pkt || !transport->get_pending_tx)
@@ -78,8 +83,13 @@ EXPORT_SYMBOL_GPL(vsock_dev_assign_transport);
 
 void vsock_dev_deassign_transport(struct vsock_sock *vsk)
 {
-	unsigned int remote_cid = vsk->remote_addr.svm_cid;
+	unsigned int remote_cid;
 	struct vsock_dev *vdev;
+	int err;
+
+	err = vsock_remote_addr_cid(vsk, &remote_cid);
+	if (err < 0)
+		return;
 
 	vdev = vsock_dev_find_dev(remote_cid);
 	if (!vdev)
