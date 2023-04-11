@@ -25,12 +25,17 @@ extern spinlock_t vsock_table_lock;
 #define vsock_sk(__sk)    ((struct vsock_sock *)__sk)
 #define sk_vsock(__vsk)   (&(__vsk)->sk)
 
+struct sockaddr_vm_rcu {
+	struct sockaddr_vm addr;
+	struct rcu_head rcu;
+};
+
 struct vsock_sock {
 	/* sk must be the first member. */
 	struct sock sk;
 	const struct vsock_transport *transport;
 	struct sockaddr_vm local_addr;
-	struct sockaddr_vm * __rcu remote_addr;
+	struct sockaddr_vm_rcu * __rcu remote_addr;
 	/* Links for the global tables of bound and connected sockets. */
 	struct list_head bound_table;
 	struct list_head connected_table;

@@ -144,7 +144,7 @@ static DEFINE_MUTEX(vsock_register_mutex);
 /**** UTILS ****/
 bool vsock_remote_addr_bound(struct vsock_sock *vsk)
 {
-	struct sockaddr_vm *remote_addr;
+	struct sockaddr_vm_rcu *remote_addr;
 	bool ret;
 
 	rcu_read_lock();
@@ -154,7 +154,7 @@ bool vsock_remote_addr_bound(struct vsock_sock *vsk)
 		return false;
 	}
 
-	ret = vsock_addr_bound(remote_addr);
+	ret = vsock_addr_bound(&remote_addr->addr);
 	rcu_read_unlock();
 
 	return ret;
@@ -163,7 +163,7 @@ EXPORT_SYMBOL_GPL(vsock_remote_addr_bound);
 
 int vsock_remote_addr_copy(struct vsock_sock *vsk, struct sockaddr_vm *dest)
 {
-	struct sockaddr_vm *remote_addr;
+	struct sockaddr_vm_rcu *remote_addr;
 
 	rcu_read_lock();
 	remote_addr = rcu_dereference(vsk->remote_addr);
@@ -171,7 +171,7 @@ int vsock_remote_addr_copy(struct vsock_sock *vsk, struct sockaddr_vm *dest)
 		rcu_read_unlock();
 		return -EINVAL;
 	}
-	memcpy(dest, remote_addr, sizeof(*dest));
+	memcpy(dest, &remote_addr->addr, sizeof(*dest));
 	rcu_read_unlock();
 
 	return 0;
@@ -180,7 +180,7 @@ EXPORT_SYMBOL_GPL(vsock_remote_addr_copy);
 
 int vsock_remote_addr_cid(struct vsock_sock *vsk, unsigned int *cid)
 {
-	struct sockaddr_vm *remote_addr;
+	struct sockaddr_vm_rcu *remote_addr;
 
 	rcu_read_lock();
 	remote_addr = rcu_dereference(vsk->remote_addr);
@@ -188,7 +188,7 @@ int vsock_remote_addr_cid(struct vsock_sock *vsk, unsigned int *cid)
 		rcu_read_unlock();
 		return -EINVAL;
 	}
-	*cid = remote_addr->svm_cid;
+	*cid = remote_addr->addr.svm_cid;
 	rcu_read_unlock();
 
 	return 0;
@@ -197,7 +197,7 @@ EXPORT_SYMBOL_GPL(vsock_remote_addr_cid);
 
 int vsock_remote_addr_port(struct vsock_sock *vsk, unsigned int *port)
 {
-	struct sockaddr_vm *remote_addr;
+	struct sockaddr_vm_rcu *remote_addr;
 
 	rcu_read_lock();
 	remote_addr = rcu_dereference(vsk->remote_addr);
@@ -205,7 +205,7 @@ int vsock_remote_addr_port(struct vsock_sock *vsk, unsigned int *port)
 		rcu_read_unlock();
 		return -EINVAL;
 	}
-	*port = remote_addr->svm_port;
+	*port = remote_addr->addr.svm_port;
 	rcu_read_unlock();
 
 	return 0;
@@ -214,7 +214,7 @@ EXPORT_SYMBOL_GPL(vsock_remote_addr_port);
 
 int vsock_remote_addr_update_cid_port(struct vsock_sock *vsk, u32 cid, u32 port)
 {
-	struct sockaddr_vm *old, *new;
+	struct sockaddr_vm_rcu *old, *new;
 
 	new = kmalloc(sizeof(*new), GFP_KERNEL);
 	if (!new)
@@ -226,16 +226,14 @@ int vsock_remote_addr_update_cid_port(struct vsock_sock *vsk, u32 cid, u32 port)
 		kfree(new);
 		return -EINVAL;
 	}
-	memcpy(new, old, sizeof(*new));
+	memcpy(&new->addr, &old->addr, sizeof(new->addr));
 	rcu_read_unlock();
 
-	new->svm_cid = cid;
-	new->svm_port = port;
+	new->addr.svm_cid = cid;
+	new->addr.svm_port = port;
 
 	old = rcu_replace_pointer(vsk->remote_addr, new, lockdep_sock_is_held(sk_vsock(vsk)));
-	/* wait for readers to leave read-side section before freeing old */
-	synchronize_rcu();
-	kfree(old);
+	kfree_rcu(old, rcu);
 
 	return 0;
 }
@@ -243,18 +241,15 @@ EXPORT_SYMBOL_GPL(vsock_remote_addr_update_cid_port);
 
 int vsock_remote_addr_update(struct vsock_sock *vsk, struct sockaddr_vm *src)
 {
-	struct sockaddr_vm *old, *new;
+	struct sockaddr_vm_rcu *old, *new;
 
 	new = kmalloc(sizeof(*new), GFP_KERNEL);
 	if (!new)
 		return -ENOMEM;
 
-	memcpy(new, src, sizeof(*new));
-
+	memcpy(&new->addr, src, sizeof(new->addr));
 	old = rcu_replace_pointer(vsk->remote_addr, new, lockdep_sock_is_held(sk_vsock(vsk)));
-	/* wait for readers to leave read-side section before freeing old */
-	synchronize_rcu();
-	kfree(old);
+	kfree_rcu(old, rcu);
 
 	return 0;
 }
@@ -262,7 +257,7 @@ int vsock_remote_addr_update(struct vsock_sock *vsk, struct sockaddr_vm *src)
 bool vsock_remote_addr_equals(struct vsock_sock *vsk,
 			      struct sockaddr_vm *other)
 {
-	struct sockaddr_vm *remote_addr;
+	struct sockaddr_vm_rcu *remote_addr;
 	bool equals;
 
 	rcu_read_lock();
@@ -272,7 +267,7 @@ bool vsock_remote_addr_equals(struct vsock_sock *vsk,
 		return false;
 	}
 
-	equals = vsock_addr_equals_addr(remote_addr, other);
+	equals = vsock_addr_equals_addr(&remote_addr->addr, other);
 	rcu_read_unlock();
 
 	return equals;
@@ -388,10 +383,10 @@ static struct sock *__vsock_find_connected_socket(struct sockaddr_vm *src,
 	rcu_read_lock();
 	list_for_each_entry(vsk, vsock_connected_sockets(src, dst),
 			    connected_table) {
-		struct sockaddr_vm *remote_addr;
+		struct sockaddr_vm_rcu *remote_addr;
 
 		remote_addr = rcu_dereference(vsk->remote_addr);
-		if (vsock_addr_equals_addr(src, remote_addr) &&
+		if (vsock_addr_equals_addr(src, &remote_addr->addr) &&
 		    dst->svm_port == vsk->local_addr.svm_port) {
 			rcu_read_unlock();
 			return sk_vsock(vsk);
@@ -412,7 +407,7 @@ static void vsock_insert_unbound(struct vsock_sock *vsk)
 int vsock_insert_connected(struct vsock_sock *vsk)
 {
 	struct list_head *list;
-	struct sockaddr_vm *remote_addr;
+	struct sockaddr_vm_rcu *remote_addr;
 
 	rcu_read_lock();
 	remote_addr = rcu_dereference(vsk->remote_addr);
@@ -420,7 +415,7 @@ int vsock_insert_connected(struct vsock_sock *vsk)
 		rcu_read_unlock();
 		return -EINVAL;
 	}
-	list = vsock_connected_sockets(remote_addr, &vsk->local_addr);
+	list = vsock_connected_sockets(&remote_addr->addr, &vsk->local_addr);
 	rcu_read_unlock();
 
 	spin_lock_bh(&vsock_table_lock);
@@ -1023,6 +1018,7 @@ static void __vsock_release(struct sock *sk, int level)
 static void vsock_sk_destruct(struct sock *sk)
 {
 	struct vsock_sock *vsk = vsock_sk(sk);
+	struct sockaddr_vm_rcu *remote_addr;
 
 	vsock_deassign_transport(vsk);
 
@@ -1030,8 +1026,8 @@ static void vsock_sk_destruct(struct sock *sk)
 	 * possibly register the address family with the kernel.
 	 */
 	vsock_addr_init(&vsk->local_addr, VMADDR_CID_ANY, VMADDR_PORT_ANY);
-	vsock_remote_addr_update_cid_port(vsk, VMADDR_CID_ANY, VMADDR_PORT_ANY);
-
+	remote_addr = rcu_replace_pointer(vsk->remote_addr, NULL, 1);
+	kfree_rcu(remote_addr);
 	put_cred(vsk->owner);
 }
 
@@ -1120,6 +1116,7 @@ static int vsock_getname(struct socket *sock,
 	struct sock *sk;
 	struct vsock_sock *vsk;
 	struct sockaddr_vm *vm_addr;
+	struct sockaddr_vm_rcu *rcu_ptr;
 
 	sk = sock->sk;
 	vsk = vsock_sk(sk);
@@ -1128,11 +1125,17 @@ static int vsock_getname(struct socket *sock,
 	lock_sock(sk);
 
 	if (peer) {
+		rcu_read_lock();
 		if (sock->state != SS_CONNECTED) {
 			err = -ENOTCONN;
 			goto out;
 		}
-		vm_addr = &vsk->remote_addr;
+		rcu_ptr = rcu_dereference(vsk->remote_addr);
+		if (!rcu_ptr) {
+			err = -EINVAL;
+			goto out;
+		}
+		vm_addr = &rcu_ptr->addr;
 	} else {
 		vm_addr = &vsk->local_addr;
 	}
@@ -1152,6 +1155,8 @@ static int vsock_getname(struct socket *sock,
 	err = sizeof(*vm_addr);
 
 out:
+	if (peer)
+		rcu_read_lock();
 	release_sock(sk);
 	return err;
 }
