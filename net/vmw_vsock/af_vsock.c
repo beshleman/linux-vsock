@@ -138,8 +138,10 @@ struct proto vsock_proto = {
 static const struct vsock_transport *transport_h2g;
 /* Transport used for guest->host communication */
 static const struct vsock_transport *transport_g2h;
-/* Transport used for DGRAM communication */
-static const struct vsock_transport *transport_dgram;
+/* Transport used for host->guest DGRAM communication */
+static const struct vsock_transport *transport_dgram_h2g;
+/* Transport used for guest->host DGRAM communication */
+static const struct vsock_transport *transport_dgram_g2h;
 /* Transport used for local communication */
 static const struct vsock_transport *transport_local;
 static DEFINE_MUTEX(vsock_register_mutex);
@@ -458,7 +460,13 @@ int vsock_assign_transport(struct vsock_sock *vsk, struct vsock_sock *psk)
 
 	switch (sk->sk_type) {
 	case SOCK_DGRAM:
-		new_transport = transport_dgram;
+		if (vsock_use_local_transport(remote_cid))
+			new_transport = transport_local;
+		else if (remote_cid <= VMADDR_CID_HOST || !transport_dgram_h2g ||
+			 (remote_flags & VMADDR_FLAG_TO_HOST))
+			new_transport = transport_dgram_g2h;
+		else
+			new_transport = transport_dgram_h2g;
 		break;
 	case SOCK_STREAM:
 	case SOCK_SEQPACKET:
@@ -1264,6 +1272,9 @@ static int vsock_dgram_connect(struct socket *sock,
 	}
 
 	memcpy(&vsk->remote_addr, remote_addr, sizeof(vsk->remote_addr));
+	err = vsock_assign_transport(vsk, NULL);
+	if (err)
+		goto out;
 	sock->state = SS_CONNECTED;
 
 	/* sock map disallows redirection of non-TCP sockets with sk_state !=
@@ -2309,14 +2320,6 @@ static int vsock_create(struct net *net, struct socket *sock,
 
 	vsk = vsock_sk(sk);
 
-	if (sock->type == SOCK_DGRAM) {
-		ret = vsock_assign_transport(vsk, NULL);
-		if (ret < 0) {
-			sock_put(sk);
-			return ret;
-		}
-	}
-
 	vsock_insert_unbound(vsk);
 
 	return 0;
@@ -2446,7 +2449,8 @@ int vsock_core_register(const struct vsock_transport *t, int features)
 
 	t_h2g = transport_h2g;
 	t_g2h = transport_g2h;
-	t_dgram = transport_dgram;
+	t_dgram_g2h = transport_dgram_g2h;
+	t_dgram_h2g = transport_dgram_h2g;
 	t_local = transport_local;
 
 	if (features & VSOCK_TRANSPORT_F_H2G) {
@@ -2465,17 +2469,22 @@ int vsock_core_register(const struct vsock_transport *t, int features)
 		t_g2h = t;
 	}
 
-	if (features & VSOCK_TRANSPORT_F_DGRAM) {
-		/* XXX: always chose the G2H variant over others, support nesting later */
-		if (features & VSOCK_TRANSPORT_F_G2H) {
-			if (t_dgram)
-				pr_warn("vsock: preferring g2h transport for dgram\n");
-			t_dgram = t;
+	if ((features & VSOCK_TRANSPORT_F_DGRAM && features & VSOCK_TRANSPORT_F_G2H)) {
+		if (t_dgram_g2h) {
+			err = -EBUSY;
+			goto err_busy;
 		}
 
-		if (!t_dgram) {
-			t_dgram = t;
+		t_dgram_g2h = t;
+	}
+
+	if ((features & VSOCK_TRANSPORT_F_DGRAM && features & VSOCK_TRANSPORT_F_H2G)) {
+		if (t_dgram_h2g) {
+			err = -EBUSY;
+			goto err_busy;
 		}
+
+		t_dgram_h2g = t;
 	}
 
 	if (features & VSOCK_TRANSPORT_F_LOCAL) {
@@ -2488,7 +2497,8 @@ int vsock_core_register(const struct vsock_transport *t, int features)
 
 	transport_h2g = t_h2g;
 	transport_g2h = t_g2h;
-	transport_dgram = t_dgram;
+	transport_dgram_h2g = t_dgram_h2g;
+	transport_dgram_g2h = t_dgram_g2h;
 	transport_local = t_local;
 
 err_busy:
@@ -2507,8 +2517,11 @@ void vsock_core_unregister(const struct vsock_transport *t)
 	if (transport_g2h == t)
 		transport_g2h = NULL;
 
-	if (transport_dgram == t)
-		transport_dgram = NULL;
+	if (transport_dgram_g2h == t)
+		transport_dgram_g2h = NULL;
+
+	if (transport_dgram_h2g == t)
+		transport_dgram_h2g = NULL;
 
 	if (transport_local == t)
 		transport_local = NULL;
