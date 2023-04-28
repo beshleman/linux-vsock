@@ -2074,9 +2074,9 @@ static void vmci_vsock_transport_cb(bool is_host)
 	int features;
 
 	if (is_host)
-		features = VSOCK_TRANSPORT_F_H2G;
+		features = VSOCK_TRANSPORT_F_H2G | VSOCK_TRANSPORT_F_DGRAM;
 	else
-		features = VSOCK_TRANSPORT_F_G2H;
+		features = VSOCK_TRANSPORT_F_G2H | VSOCK_TRANSPORT_F_DGRAM;
 
 	vsock_core_register(&vmci_transport, features);
 }
@@ -2106,13 +2106,6 @@ static int __init vmci_transport_init(void)
 		vmci_transport_qp_resumed_sub_id = VMCI_INVALID_ID;
 		goto err_destroy_stream_handle;
 	}
-
-	/* Register only with dgram feature, other features (H2G, G2H) will be
-	 * registered when the first host or guest becomes active.
-	 */
-	err = vsock_core_register(&vmci_transport, VSOCK_TRANSPORT_F_DGRAM);
-	if (err < 0)
-		goto err_unsubscribe;
 
 	err = vmci_register_vsock_callback(vmci_vsock_transport_cb);
 	if (err < 0)
