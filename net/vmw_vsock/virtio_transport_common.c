@@ -259,8 +259,9 @@ static int virtio_transport_send_pkt_info(struct vsock_sock *vsk,
 	src_cid = t_ops->transport.get_local_cid();
 	src_port = vsk->local_addr.svm_port;
 	if (!info->remote_cid) {
-		dst_cid	= vsk->remote_addr.svm_cid;
-		dst_port = vsk->remote_addr.svm_port;
+		ret = vsock_remote_addr_cid_port(vsk, &dst_cid, &dst_port);
+		if (ret < 0)
+			return ret;
 	} else {
 		dst_cid = info->remote_cid;
 		dst_port = info->remote_port;
@@ -878,12 +879,14 @@ int virtio_transport_shutdown(struct vsock_sock *vsk, int mode)
 EXPORT_SYMBOL_GPL(virtio_transport_shutdown);
 
 int
-virtio_transport_dgram_enqueue(struct vsock_sock *vsk,
+virtio_transport_dgram_enqueue(const struct vsock_transport *transport,
+			       struct vsock_sock *vsk,
 			       struct sockaddr_vm *remote_addr,
 			       struct msghdr *msg,
 			       size_t dgram_len)
 {
-	const struct virtio_transport *t_ops;
+	const struct virtio_transport *t_ops =
+		(const struct virtio_transport *)transport;
 	struct virtio_vsock_pkt_info info = {
 		.op = VIRTIO_VSOCK_OP_RW,
 		.msg = msg,
@@ -897,7 +900,6 @@ virtio_transport_dgram_enqueue(struct vsock_sock *vsk,
 	if (dgram_len > VIRTIO_VSOCK_MAX_PKT_BUF_SIZE)
 		return -EMSGSIZE;
 
-	t_ops = virtio_transport_get_ops(vsk);
 	src_cid = t_ops->transport.get_local_cid();
 	src_port = vsk->local_addr.svm_port;
 
@@ -1121,7 +1123,11 @@ virtio_transport_recv_connecting(struct sock *sk,
 	case VIRTIO_VSOCK_OP_RESPONSE:
 		sk->sk_state = TCP_ESTABLISHED;
 		sk->sk_socket->state = SS_CONNECTED;
-		vsock_insert_connected(vsk);
+		err = vsock_insert_connected(vsk);
+		if (err) {
+			skerr = ECONNRESET;
+			goto destroy;
+		}
 		sk->sk_state_change(sk);
 		break;
 	case VIRTIO_VSOCK_OP_INVALID:
@@ -1323,6 +1329,7 @@ virtio_transport_recv_listen(struct sock *sk, struct sk_buff *skb,
 	struct virtio_vsock_hdr *hdr = virtio_vsock_hdr(skb);
 	struct vsock_sock *vsk = vsock_sk(sk);
 	struct vsock_sock *vchild;
+	struct sockaddr_vm child_remote;
 	struct sock *child;
 	int ret;
 
@@ -1351,14 +1358,13 @@ virtio_transport_recv_listen(struct sock *sk, struct sk_buff *skb,
 	vchild = vsock_sk(child);
 	vsock_addr_init(&vchild->local_addr, le64_to_cpu(hdr->dst_cid),
 			le32_to_cpu(hdr->dst_port));
-	vsock_addr_init(&vchild->remote_addr, le64_to_cpu(hdr->src_cid),
+	vsock_addr_init(&child_remote, le64_to_cpu(hdr->src_cid),
 			le32_to_cpu(hdr->src_port));
-
-	ret = vsock_assign_transport(vchild, vsk);
+	ret = vsock_assign_transport(vchild, vsk, &child_remote);
 	/* Transport assigned (looking at remote_addr) must be the same
 	 * where we received the request.
 	 */
-	if (ret || vchild->transport != &t->transport) {
+	if (ret || vsock_core_get_transport(vchild) != &t->transport) {
 		release_sock(child);
 		virtio_transport_reset_no_sock(t, skb);
 		sock_put(child);
@@ -1368,7 +1374,13 @@ virtio_transport_recv_listen(struct sock *sk, struct sk_buff *skb,
 	if (virtio_transport_space_update(child, skb))
 		child->sk_write_space(child);
 
-	vsock_insert_connected(vchild);
+	ret = vsock_insert_connected(vchild);
+	if (ret) {
+		release_sock(child);
+		virtio_transport_reset_no_sock(t, skb);
+		sock_put(child);
+		return ret;
+	}
 	vsock_enqueue_accept(sk, child);
 	virtio_transport_send_response(vchild, skb);
 

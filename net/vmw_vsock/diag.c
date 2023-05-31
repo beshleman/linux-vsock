@@ -15,8 +15,14 @@ static int sk_diag_fill(struct sock *sk, struct sk_buff *skb,
 			u32 portid, u32 seq, u32 flags)
 {
 	struct vsock_sock *vsk = vsock_sk(sk);
+	struct sockaddr_vm remote_addr;
 	struct vsock_diag_msg *rep;
 	struct nlmsghdr *nlh;
+	int err;
+
+	err = vsock_remote_addr_copy(vsk, &remote_addr);
+	if (err < 0)
+		return err;
 
 	nlh = nlmsg_put(skb, portid, seq, SOCK_DIAG_BY_FAMILY, sizeof(*rep),
 			flags);
@@ -36,8 +42,8 @@ static int sk_diag_fill(struct sock *sk, struct sk_buff *skb,
 	rep->vdiag_shutdown = sk->sk_shutdown;
 	rep->vdiag_src_cid = vsk->local_addr.svm_cid;
 	rep->vdiag_src_port = vsk->local_addr.svm_port;
-	rep->vdiag_dst_cid = vsk->remote_addr.svm_cid;
-	rep->vdiag_dst_port = vsk->remote_addr.svm_port;
+	rep->vdiag_dst_cid = remote_addr.svm_cid;
+	rep->vdiag_dst_port = remote_addr.svm_port;
 	rep->vdiag_ino = sock_i_ino(sk);
 
 	sock_diag_save_cookie(sk, rep->vdiag_cookie);

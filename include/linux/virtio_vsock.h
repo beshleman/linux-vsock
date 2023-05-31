@@ -231,7 +231,8 @@ virtio_transport_stream_enqueue(struct vsock_sock *vsk,
 				struct msghdr *msg,
 				size_t len);
 int
-virtio_transport_dgram_enqueue(struct vsock_sock *vsk,
+virtio_transport_dgram_enqueue(const struct vsock_transport *transport,
+			       struct vsock_sock *vsk,
 			       struct sockaddr_vm *remote_addr,
 			       struct msghdr *msg,
 			       size_t len);

@@ -323,6 +323,8 @@ static void hvs_open_connection(struct vmbus_channel *chan)
 		goto out;
 
 	if (conn_from_host) {
+		struct sockaddr_vm remote_addr;
+
 		if (sk->sk_ack_backlog >= sk->sk_max_ack_backlog)
 			goto out;
 
@@ -336,10 +338,9 @@ static void hvs_open_connection(struct vmbus_channel *chan)
 		hvs_addr_init(&vnew->local_addr, if_type);
 
 		/* Remote peer is always the host */
-		vsock_addr_init(&vnew->remote_addr,
-				VMADDR_CID_HOST, VMADDR_PORT_ANY);
-		vnew->remote_addr.svm_port = get_port_by_srv_id(if_instance);
-		ret = vsock_assign_transport(vnew, vsock_sk(sk));
+		vsock_addr_init(&remote_addr, VMADDR_CID_HOST, get_port_by_srv_id(if_instance));
+
+		ret = vsock_assign_transport(vnew, vsock_sk(sk), &remote_addr);
 		/* Transport assigned (looking at remote_addr) must be the
 		 * same where we received the request.
 		 */
@@ -459,13 +460,18 @@ static int hvs_connect(struct vsock_sock *vsk)
 {
 	union hvs_service_id vm, host;
 	struct hvsock *h = vsk->trans;
+	int err;
 
 	vm.srv_id = srv_id_template;
 	vm.svm_port = vsk->local_addr.svm_port;
 	h->vm_srv_id = vm.srv_id;
 
 	host.srv_id = srv_id_template;
-	host.svm_port = vsk->remote_addr.svm_port;
+
+	err = vsock_remote_addr_port(vsk, &host.svm_port);
+	if (err < 0)
+		return err;
+
 	h->host_srv_id = host.srv_id;
 
 	return vmbus_send_tl_connect_request(&h->vm_srv_id, &h->host_srv_id);
@@ -566,7 +572,8 @@ static int hvs_dgram_get_length(struct sk_buff *skb, size_t *len)
 	return -EOPNOTSUPP;
 }
 
-static int hvs_dgram_enqueue(struct vsock_sock *vsk,
+static int hvs_dgram_enqueue(const struct vsock_transport *transport,
+			     struct vsock_sock *vsk,
 			     struct sockaddr_vm *remote, struct msghdr *msg,
 			     size_t dgram_len)
 {
@@ -866,7 +873,13 @@ static struct vsock_transport hvs_transport = {
 
 static bool hvs_check_transport(struct vsock_sock *vsk)
 {
-	return vsk->transport == &hvs_transport;
+	bool ret;
+
+	rcu_read_lock();
+	ret = vsock_core_get_transport(vsk) == &hvs_transport;
+	rcu_read_unlock();
+
+	return ret;
 }
 
 static int hvs_probe(struct hv_device *hdev,
