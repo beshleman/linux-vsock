@@ -217,7 +217,8 @@ void virtio_transport_notify_buffer_size(struct vsock_sock *vsk, u64 *val);
 u64 virtio_transport_stream_rcvhiwat(struct vsock_sock *vsk);
 bool virtio_transport_stream_is_active(struct vsock_sock *vsk);
 bool virtio_transport_stream_allow(u32 cid, u32 port);
-bool virtio_transport_dgram_allow(u32 cid, u32 port);
+void virtio_transport_dgram_addr_init(struct sk_buff *skb,
+				      struct sockaddr_vm *addr);
 
 int virtio_transport_connect(struct vsock_sock *vsk);
 
@@ -245,4 +246,5 @@ void virtio_transport_put_credit(struct virtio_vsock_sock *vvs, u32 credit);
 void virtio_transport_deliver_tap_pkt(struct sk_buff *skb);
 int virtio_transport_purge_skbs(void *vsk, struct sk_buff_head *list);
 int virtio_transport_read_skb(struct vsock_sock *vsk, skb_read_actor_t read_actor);
+void virtio_transport_init_dgram_bind_tables(void);
 #endif /* _LINUX_VIRTIO_VSOCK_H */
