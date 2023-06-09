@@ -905,19 +905,6 @@ static int __vsock_bind_connectible(struct vsock_sock *vsk,
 	return vsock_bind_common(vsk, addr, vsock_bind_table, VSOCK_HASH_SIZE + 1);
 }
 
-int vsock_bind_stream(struct vsock_sock *vsk,
-		      struct sockaddr_vm *addr)
-{
-	int retval;
-
-	spin_lock_bh(&vsock_table_lock);
-	retval = __vsock_bind_connectible(vsk, addr);
-	spin_unlock_bh(&vsock_table_lock);
-
-	return retval;
-}
-EXPORT_SYMBOL(vsock_bind_stream);
-
 static int vsock_bind_dgram(struct vsock_sock *vsk,
 			    struct sockaddr_vm *addr)
 {
