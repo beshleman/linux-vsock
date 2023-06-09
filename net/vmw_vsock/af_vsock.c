@@ -473,7 +473,7 @@ int vsock_insert_connected(struct vsock_sock *vsk)
 }
 EXPORT_SYMBOL_GPL(vsock_insert_connected);
 
-void vsock_remove_dgram_bound(struct vsock_sock *vsk)
+static void vsock_remove_dgram_bound(struct vsock_sock *vsk)
 {
 	spin_lock_bh(&vsock_dgram_table_lock);
 	if (__vsock_in_bound_table(vsk))
