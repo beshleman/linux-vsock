@@ -148,6 +148,7 @@ static void vsock_bpf_check_needs_rebuild(struct proto *ops)
 
 int vsock_bpf_update_proto(struct sock *sk, struct sk_psock *psock, bool restore)
 {
+	const struct vsock_transport *transport;
 	struct vsock_sock *vsk;
 
 	if (restore) {
@@ -157,10 +158,15 @@ int vsock_bpf_update_proto(struct sock *sk, struct sk_psock *psock, bool restore
 	}
 
 	vsk = vsock_sk(sk);
-	if (!vsk->transport)
+
+	rcu_read_lock();
+	transport = vsock_core_get_transport(vsk);
+	rcu_read_unlock();
+
+	if (!transport)
 		return -ENODEV;
 
-	if (!vsk->transport->read_skb)
+	if (!transport->read_skb)
 		return -EOPNOTSUPP;
 
 	vsock_bpf_check_needs_rebuild(psock->sk_proto);

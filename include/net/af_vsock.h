@@ -25,12 +25,17 @@ extern spinlock_t vsock_table_lock;
 #define vsock_sk(__sk)    ((struct vsock_sock *)__sk)
 #define sk_vsock(__vsk)   (&(__vsk)->sk)
 
+struct vsock_remote_info {
+	struct sockaddr_vm addr;
+	struct rcu_head rcu;
+	const struct vsock_transport *transport;
+};
+
 struct vsock_sock {
 	/* sk must be the first member. */
 	struct sock sk;
-	const struct vsock_transport *transport;
 	struct sockaddr_vm local_addr;
-	struct sockaddr_vm remote_addr;
+	struct vsock_remote_info __rcu *remote_info;
 	/* Links for the global tables of bound and connected sockets. */
 	struct list_head bound_table;
 	struct list_head connected_table;
@@ -120,8 +125,8 @@ struct vsock_transport {
 
 	/* DGRAM. */
 	int (*dgram_bind)(struct vsock_sock *, struct sockaddr_vm *);
-	int (*dgram_enqueue)(struct vsock_sock *, struct sockaddr_vm *,
-			     struct msghdr *, size_t len);
+	int (*dgram_enqueue)(const struct vsock_transport *, struct vsock_sock *,
+			     struct sockaddr_vm *, struct msghdr *, size_t len);
 	bool (*dgram_allow)(u32 cid, u32 port);
 	int (*dgram_get_cid)(struct sk_buff *skb, unsigned int *cid);
 	int (*dgram_get_port)(struct sk_buff *skb, unsigned int *port);
@@ -196,6 +201,16 @@ void vsock_core_unregister(const struct vsock_transport *t);
 /* The transport may downcast this to access transport-specific functions */
 const struct vsock_transport *vsock_core_get_transport(struct vsock_sock *vsk);
 
+static inline struct vsock_remote_info *
+vsock_core_get_remote_info(struct vsock_sock *vsk)
+{
+	/* vsk->remote_info may be accessed if the rcu read lock is held OR the
+	 * socket lock is held
+	 */
+	return rcu_dereference_check(vsk->remote_info,
+				     lockdep_sock_is_held(sk_vsock(vsk)));
+}
+
 /**** UTILS ****/
 
 /* vsock_table_lock must be held */
@@ -214,7 +229,7 @@ void vsock_release_pending(struct sock *pending);
 void vsock_add_pending(struct sock *listener, struct sock *pending);
 void vsock_remove_pending(struct sock *listener, struct sock *pending);
 void vsock_enqueue_accept(struct sock *listener, struct sock *connected);
-void vsock_insert_connected(struct vsock_sock *vsk);
+int vsock_insert_connected(struct vsock_sock *vsk);
 void vsock_remove_bound(struct vsock_sock *vsk);
 void vsock_remove_connected(struct vsock_sock *vsk);
 struct sock *vsock_find_bound_socket(struct sockaddr_vm *addr);
@@ -223,7 +238,8 @@ struct sock *vsock_find_connected_socket(struct sockaddr_vm *src,
 void vsock_remove_sock(struct vsock_sock *vsk);
 void vsock_for_each_connected_socket(struct vsock_transport *transport,
 				     void (*fn)(struct sock *sk));
-int vsock_assign_transport(struct vsock_sock *vsk, struct vsock_sock *psk);
+int vsock_assign_transport(struct vsock_sock *vsk, struct vsock_sock *psk,
+			   struct sockaddr_vm *remote_addr);
 bool vsock_find_cid(unsigned int cid);
 struct sock *vsock_find_bound_dgram_socket(struct sockaddr_vm *addr);
 
@@ -252,5 +268,15 @@ void __init vsock_bpf_build_proto(void);
 static inline void __init vsock_bpf_build_proto(void)
 {}
 #endif
+
+/* RCU-protected remote addr helpers */
+int vsock_remote_addr_cid(struct vsock_sock *vsk, unsigned int *cid);
+int vsock_remote_addr_port(struct vsock_sock *vsk, unsigned int *port);
+int vsock_remote_addr_cid_port(struct vsock_sock *vsk, unsigned int *cid,
+			       unsigned int *port);
+int vsock_remote_addr_copy(struct vsock_sock *vsk, struct sockaddr_vm *dest);
+bool vsock_remote_addr_bound(struct vsock_sock *vsk);
+bool vsock_remote_addr_equals(struct vsock_sock *vsk, struct sockaddr_vm *other);
+int vsock_remote_addr_update_cid_port(struct vsock_sock *vsk, u32 cid, u32 port);
 
 #endif /* __AF_VSOCK_H__ */

@@ -283,18 +283,25 @@ vmci_transport_send_control_pkt(struct sock *sk,
 				u16 proto,
 				struct vmci_handle handle)
 {
+	struct sockaddr_vm addr_stack;
+	struct sockaddr_vm *remote_addr = &addr_stack;
 	struct vsock_sock *vsk;
+	int err;
 
 	vsk = vsock_sk(sk);
 
 	if (!vsock_addr_bound(&vsk->local_addr))
 		return -EINVAL;
 
-	if (!vsock_addr_bound(&vsk->remote_addr))
+	if (!vsock_remote_addr_bound(vsk))
 		return -EINVAL;
 
+	err = vsock_remote_addr_copy(vsk, remote_addr);
+	if (err < 0)
+		return err;
+
 	return vmci_transport_alloc_send_control_pkt(&vsk->local_addr,
-						     &vsk->remote_addr,
+						     remote_addr,
 						     type, size, mode,
 						     wait, proto, handle);
 }
@@ -317,6 +324,7 @@ static int vmci_transport_send_reset(struct sock *sk,
 	struct sockaddr_vm *dst_ptr;
 	struct sockaddr_vm dst;
 	struct vsock_sock *vsk;
+	int err;
 
 	if (pkt->type == VMCI_TRANSPORT_PACKET_TYPE_RST)
 		return 0;
@@ -326,13 +334,16 @@ static int vmci_transport_send_reset(struct sock *sk,
 	if (!vsock_addr_bound(&vsk->local_addr))
 		return -EINVAL;
 
-	if (vsock_addr_bound(&vsk->remote_addr)) {
-		dst_ptr = &vsk->remote_addr;
+	if (vsock_remote_addr_bound(vsk)) {
+		err = vsock_remote_addr_copy(vsk, &dst);
+		if (err < 0)
+			return err;
 	} else {
 		vsock_addr_init(&dst, pkt->dg.src.context,
 				pkt->src_port);
-		dst_ptr = &dst;
 	}
+	dst_ptr = &dst;
+
 	return vmci_transport_alloc_send_control_pkt(&vsk->local_addr, dst_ptr,
 					     VMCI_TRANSPORT_PACKET_TYPE_RST,
 					     0, 0, NULL, VSOCK_PROTO_INVALID,
@@ -490,7 +501,7 @@ static struct sock *vmci_transport_get_pending(
 
 	list_for_each_entry(vpending, &vlistener->pending_links,
 			    pending_links) {
-		if (vsock_addr_equals_addr(&src, &vpending->remote_addr) &&
+		if (vsock_remote_addr_equals(vpending, &src) &&
 		    pkt->dst_port == vpending->local_addr.svm_port) {
 			pending = sk_vsock(vpending);
 			sock_hold(pending);
@@ -940,6 +951,7 @@ static void vmci_transport_recv_pkt_work(struct work_struct *work)
 static int vmci_transport_recv_listen(struct sock *sk,
 				      struct vmci_transport_packet *pkt)
 {
+	struct sockaddr_vm remote_addr;
 	struct sock *pending;
 	struct vsock_sock *vpending;
 	int err;
@@ -1015,10 +1027,10 @@ static int vmci_transport_recv_listen(struct sock *sk,
 
 	vsock_addr_init(&vpending->local_addr, pkt->dg.dst.context,
 			pkt->dst_port);
-	vsock_addr_init(&vpending->remote_addr, pkt->dg.src.context,
-			pkt->src_port);
 
-	err = vsock_assign_transport(vpending, vsock_sk(sk));
+	vsock_addr_init(&remote_addr, pkt->dg.src.context, pkt->src_port);
+
+	err = vsock_assign_transport(vpending, vsock_sk(sk), &remote_addr);
 	/* Transport assigned (looking at remote_addr) must be the same
 	 * where we received the request.
 	 */
@@ -1133,6 +1145,7 @@ vmci_transport_recv_connecting_server(struct sock *listener,
 {
 	struct vsock_sock *vpending;
 	struct vmci_handle handle;
+	unsigned int vpending_remote_cid;
 	struct vmci_qp *qpair;
 	bool is_local;
 	u32 flags;
@@ -1189,8 +1202,13 @@ vmci_transport_recv_connecting_server(struct sock *listener,
 	/* vpending->local_addr always has a context id so we do not need to
 	 * worry about VMADDR_CID_ANY in this case.
 	 */
-	is_local =
-	    vpending->remote_addr.svm_cid == vpending->local_addr.svm_cid;
+	err = vsock_remote_addr_cid(vpending, &vpending_remote_cid);
+	if (err < 0) {
+		skerr = EPROTO;
+		goto destroy;
+	}
+
+	is_local = vpending_remote_cid == vpending->local_addr.svm_cid;
 	flags = VMCI_QPFLAG_ATTACH_ONLY;
 	flags |= is_local ? VMCI_QPFLAG_LOCAL : 0;
 
@@ -1203,7 +1221,7 @@ vmci_transport_recv_connecting_server(struct sock *listener,
 					flags,
 					vmci_transport_is_trusted(
 						vpending,
-						vpending->remote_addr.svm_cid));
+						vpending_remote_cid));
 	if (err < 0) {
 		vmci_transport_send_reset(pending, pkt);
 		skerr = -err;
@@ -1277,6 +1295,8 @@ static int
 vmci_transport_recv_connecting_client(struct sock *sk,
 				      struct vmci_transport_packet *pkt)
 {
+	struct vsock_remote_info *remote_info;
+	struct sockaddr_vm *remote_addr;
 	struct vsock_sock *vsk;
 	int err;
 	int skerr;
@@ -1306,9 +1326,20 @@ vmci_transport_recv_connecting_client(struct sock *sk,
 		break;
 	case VMCI_TRANSPORT_PACKET_TYPE_NEGOTIATE:
 	case VMCI_TRANSPORT_PACKET_TYPE_NEGOTIATE2:
+		rcu_read_lock();
+		remote_info = vsock_core_get_remote_info(vsk);
+		if (!remote_info) {
+			skerr = EPROTO;
+			err = -EINVAL;
+			rcu_read_unlock();
+			goto destroy;
+		}
+
+		remote_addr = &remote_info->addr;
+
 		if (pkt->u.size == 0
-		    || pkt->dg.src.context != vsk->remote_addr.svm_cid
-		    || pkt->src_port != vsk->remote_addr.svm_port
+		    || pkt->dg.src.context != remote_addr->svm_cid
+		    || pkt->src_port != remote_addr->svm_port
 		    || !vmci_handle_is_invalid(vmci_trans(vsk)->qp_handle)
 		    || vmci_trans(vsk)->qpair
 		    || vmci_trans(vsk)->produce_size != 0
@@ -1316,9 +1347,10 @@ vmci_transport_recv_connecting_client(struct sock *sk,
 		    || vmci_trans(vsk)->detach_sub_id != VMCI_INVALID_ID) {
 			skerr = EPROTO;
 			err = -EINVAL;
-
+			rcu_read_unlock();
 			goto destroy;
 		}
+		rcu_read_unlock();
 
 		err = vmci_transport_recv_connecting_client_negotiate(sk, pkt);
 		if (err) {
@@ -1379,6 +1411,7 @@ static int vmci_transport_recv_connecting_client_negotiate(
 	int err;
 	struct vsock_sock *vsk;
 	struct vmci_handle handle;
+	unsigned int remote_cid;
 	struct vmci_qp *qpair;
 	u32 detach_sub_id;
 	bool is_local;
@@ -1449,19 +1482,23 @@ static int vmci_transport_recv_connecting_client_negotiate(
 
 	/* Make VMCI select the handle for us. */
 	handle = VMCI_INVALID_HANDLE;
-	is_local = vsk->remote_addr.svm_cid == vsk->local_addr.svm_cid;
+
+	err = vsock_remote_addr_cid(vsk, &remote_cid);
+	if (err < 0)
+		goto destroy;
+
+	is_local = remote_cid == vsk->local_addr.svm_cid;
 	flags = is_local ? VMCI_QPFLAG_LOCAL : 0;
 
 	err = vmci_transport_queue_pair_alloc(&qpair,
 					      &handle,
 					      pkt->u.size,
 					      pkt->u.size,
-					      vsk->remote_addr.svm_cid,
+					      remote_cid,
 					      flags,
 					      vmci_transport_is_trusted(
 						  vsk,
-						  vsk->
-						  remote_addr.svm_cid));
+						  remote_cid));
 	if (err < 0)
 		goto destroy;
 
@@ -1692,6 +1729,7 @@ static int vmci_transport_dgram_bind(struct vsock_sock *vsk,
 }
 
 static int vmci_transport_dgram_enqueue(
+	const struct vsock_transport *transport,
 	struct vsock_sock *vsk,
 	struct sockaddr_vm *remote_addr,
 	struct msghdr *msg,
@@ -2052,7 +2090,13 @@ static struct vsock_transport vmci_transport = {
 
 static bool vmci_check_transport(struct vsock_sock *vsk)
 {
-	return vsk->transport == &vmci_transport;
+	bool retval;
+
+	rcu_read_lock();
+	retval = vsock_core_get_transport(vsk) == &vmci_transport;
+	rcu_read_unlock();
+
+	return retval;
 }
 
 static void vmci_vsock_transport_cb(bool is_host)
