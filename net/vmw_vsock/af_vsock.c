@@ -1406,8 +1406,18 @@ static int vsock_connect(struct socket *sock, struct sockaddr *addr,
 			goto out;
 		}
 
-		if (vsock_msgzerocopy_allow(transport))
+		if (!vsock_msgzerocopy_allow(transport)) {
+			/* If this option was set before 'connect()',
+			 * when transport was unknown, check that this
+			 * feature is supported here.
+			 */
+			if (sock_flag(sk, SOCK_ZEROCOPY)) {
+				err = -EOPNOTSUPP;
+				goto out;
+			}
+		} else {
 			set_bit(SOCK_SUPPORT_ZC, &sk->sk_socket->flags);
+		}
 
 		err = vsock_auto_bind(vsk);
 		if (err)
@@ -1643,7 +1653,7 @@ static int vsock_connectible_setsockopt(struct socket *sock,
 	const struct vsock_transport *transport;
 	u64 val;
 
-	if (level != AF_VSOCK)
+	if (level != AF_VSOCK && level != SOL_SOCKET)
 		return -ENOPROTOOPT;
 
 #define COPY_IN(_v)                                       \
@@ -1665,6 +1675,34 @@ static int vsock_connectible_setsockopt(struct socket *sock,
 	lock_sock(sk);
 
 	transport = vsk->transport;
+
+	if (level == SOL_SOCKET) {
+		if (optname == SO_ZEROCOPY) {
+			int zc_val;
+
+			/* Use 'int' type here, because variable to
+			 * set this option usually has this type.
+			 */
+			COPY_IN(zc_val);
+
+			if (zc_val < 0 || zc_val > 1) {
+				err = -EINVAL;
+				goto exit;
+			}
+
+			if (transport && !vsock_msgzerocopy_allow(transport)) {
+				err = -EOPNOTSUPP;
+				goto exit;
+			}
+
+			sock_valbool_flag(sk, SOCK_ZEROCOPY,
+					  zc_val ? true : false);
+			goto exit;
+		}
+
+		release_sock(sk);
+		return sock_setsockopt(sock, level, optname, optval, optlen);
+	}
 
 	switch (optname) {
 	case SO_VM_SOCKETS_BUFFER_SIZE:
@@ -2320,6 +2358,8 @@ static int vsock_create(struct net *net, struct socket *sock,
 			return ret;
 		}
 	}
+
+	set_bit(SOCK_CUSTOM_SOCKOPT, &sk->sk_socket->flags);
 
 	vsock_insert_unbound(vsk);
 
