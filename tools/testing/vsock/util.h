@@ -2,6 +2,7 @@
 #ifndef UTIL_H
 #define UTIL_H
 
+#include <stdbool.h>
 #include <sys/socket.h>
 #include <linux/vm_sockets.h>
 
@@ -16,6 +17,16 @@ enum test_mode {
 struct test_opts {
 	enum test_mode mode;
 	unsigned int peer_cid;
+};
+
+#define VSOCK_TEST_DATA_MAX_IOV 4
+
+struct vsock_test_data {
+	bool zerocopied;	/* Data must be zerocopied. */
+	bool completion;	/* Must dequeue completion. */
+	int sendmsg_errno;	/* 'errno' after 'sendmsg()'. */
+	int vecs_cnt;		/* Number of elements in 'vecs'. */
+	struct iovec vecs[VSOCK_TEST_DATA_MAX_IOV];
 };
 
 /* A test case definition.  Test functions must print failures to stderr and
@@ -50,4 +61,11 @@ void list_tests(const struct test_case *test_cases);
 void skip_test(struct test_case *test_cases, size_t test_cases_len,
 	       const char *test_id_str);
 unsigned long hash_djb2(const void *data, size_t len);
+void enable_so_zerocopy(int fd);
+size_t iovec_bytes(const struct iovec *iov, size_t iovnum);
+unsigned long iovec_hash_djb2(struct iovec *iov, size_t iovnum);
+struct iovec *iovec_from_test_data(const struct vsock_test_data *test_data);
+void free_iovec_test_data(const struct vsock_test_data *test_data,
+			  struct iovec *iovec);
+void vsock_recv_completion(int fd, bool zerocopied, bool completion);
 #endif /* UTIL_H */

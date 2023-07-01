@@ -20,6 +20,7 @@
 #include <sys/mman.h>
 #include <poll.h>
 
+#include "vsock_test_zerocopy.h"
 #include "timeout.h"
 #include "control.h"
 #include "util.h"
@@ -1127,6 +1128,21 @@ static struct test_case test_cases[] = {
 		.name = "SOCK_STREAM virtio skb merge",
 		.run_client = test_stream_virtio_skb_merge_client,
 		.run_server = test_stream_virtio_skb_merge_server,
+	},
+	{
+		.name = "SOCK_STREAM MSG_ZEROCOPY",
+		.run_client = test_stream_msg_zcopy_client,
+		.run_server = test_stream_msg_zcopy_server,
+	},
+	{
+		.name = "SOCK_SEQPACKET MSG_ZEROCOPY",
+		.run_client = test_seqpacket_msg_zcopy_client,
+		.run_server = test_seqpacket_msg_zcopy_server,
+	},
+	{
+		.name = "SOCK_STREAM MSG_ZEROCOPY empty MSG_ERRQUEUE",
+		.run_client = test_stream_msg_zcopy_empty_errq_client,
+		.run_server = test_stream_msg_zcopy_empty_errq_server,
 	},
 	{},
 };
