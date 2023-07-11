@@ -10,18 +10,18 @@
  * - There are two kinds of sockets: those created by user action (such as
  * calling socket(2)) and those created by incoming connection request packets.
  *
- * - There are two "global" tables, one for bound sockets (sockets that have
- * specified an address that they are responsible for) and one for connected
- * sockets (sockets that have established a connection with another socket).
- * These tables are "global" in that all sockets on the system are placed
- * within them. - Note, though, that the bound table contains an extra entry
- * for a list of unbound sockets and SOCK_DGRAM sockets will always remain in
- * that list. The bound table is used solely for lookup of sockets when packets
- * are received and that's not necessary for SOCK_DGRAM sockets since we create
- * a datagram handle for each and need not perform a lookup.  Keeping SOCK_DGRAM
- * sockets out of the bound hash buckets will reduce the chance of collisions
- * when looking for SOCK_STREAM sockets and prevents us from having to check the
- * socket type in the hash table lookups.
+ * - There are three "global" tables, one for bound connectible (stream /
+ * seqpacket) sockets, one for bound datagram sockets, and one for connected
+ * sockets. Bound sockets are sockets that have specified an address that
+ * they are responsible for. Connected sockets are sockets that have
+ * established a connection with another socket. These tables are "global" in
+ * that all sockets on the system are placed within them. - Note, though,
+ * that the bound tables contain an extra entry for a list of unbound
+ * sockets. The bound tables are used solely for lookup of sockets when packets
+ * are received.
+ *
+ * - There are separate bind tables for connectible and datagram sockets to avoid
+ * address collisions between stream/seqpacket sockets and datagram sockets..
  *
  * - Sockets created by user action will either be "client" sockets that
  * initiate a connection or "server" sockets that listen for connections; we do
