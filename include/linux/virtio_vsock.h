@@ -213,6 +213,8 @@ u64 virtio_transport_stream_rcvhiwat(struct vsock_sock *vsk);
 bool virtio_transport_stream_is_active(struct vsock_sock *vsk);
 bool virtio_transport_stream_allow(u32 cid, u32 port);
 bool virtio_transport_dgram_allow(u32 cid, u32 port);
+void virtio_transport_dgram_addr_init(struct sk_buff *skb,
+				      struct sockaddr_vm *addr);
 
 int virtio_transport_connect(struct vsock_sock *vsk);
 
