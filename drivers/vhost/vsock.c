@@ -95,26 +95,17 @@ vhost_transport_error(struct sk_buff *skb, int err)
 {
 	struct sock_exterr_skb *serr;
 	struct sock *sk = skb->sk;
-	struct sk_buff *clone;
-
-	clone = skb_clone(skb, GFP_KERNEL);
-	if (!clone) {
-		kfree_skb(skb);
-		return;
-	}
 
 	serr = SKB_EXT_ERR(clone);
 	memset(serr, 0, sizeof(*serr));
 	serr->ee.ee_errno = err;
 	serr->ee.ee_origin = SO_EE_ORIGIN_NONE;
 
-	if (sock_queue_err_skb(sk, clone))
-		kfree_skb(clone);
+	if (sock_queue_err_skb(sk, skb))
+		kfree_skb(skb);
 
 	sk->sk_err = err;
 	sk_error_report(sk);
-
-	kfree_skb(skb);
 }
 
 static void
