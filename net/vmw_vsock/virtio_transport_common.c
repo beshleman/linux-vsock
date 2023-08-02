@@ -834,8 +834,6 @@ virtio_transport_dgram_enqueue(struct vsock_sock *vsk,
 	int noblock;
 	int err;
 
-	info = &info_stack;
-
 	if (dgram_len > VIRTIO_VSOCK_MAX_PKT_BUF_SIZE)
 		return -EMSGSIZE;
 
@@ -864,6 +862,7 @@ virtio_transport_dgram_enqueue(struct vsock_sock *vsk,
 	src_cid = t_ops->transport.get_local_cid();
 	src_port = vsk->local_addr.svm_port;
 
+	info = &info_stack;
 	hdr = virtio_vsock_hdr(skb);
 	hdr->type	= cpu_to_le16(info->type);
 	hdr->op		= cpu_to_le16(info->op);
