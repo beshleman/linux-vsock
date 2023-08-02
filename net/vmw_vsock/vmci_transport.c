@@ -1736,14 +1736,11 @@ static void vmci_transport_dgram_addr_init(struct sk_buff *skb,
 					   struct sockaddr_vm *addr)
 {
 	struct vmci_datagram *dg;
-	unsigned int cid, port;
 
 	WARN_ONCE(skb->head == skb->data, "vmci vsock bug: bad dgram skb");
 
 	dg = (struct vmci_datagram *)skb->head;
-	cid = dg->src.context;
-	port = dg->src.resource;
-	vsock_addr_init(addr, cid, port);
+	vsock_addr_init(addr, dg->src.context, dg->src.resource);
 }
 
 static bool vmci_transport_dgram_allow(u32 cid, u32 port)
