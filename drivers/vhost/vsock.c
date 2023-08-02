@@ -103,9 +103,10 @@ vhost_transport_error(struct sk_buff *skb, int err)
 	serr->ee.ee_origin = SO_EE_ORIGIN_NONE;
 
 	clone = skb_clone(skb, GFP_KERNEL);
-	if (!clone)
+	if (!clone) {
+		kfree_skb(skb);
 		return;
-
+	}
 	if (sock_queue_err_skb(sk, clone))
 		kfree_skb(clone);
 
