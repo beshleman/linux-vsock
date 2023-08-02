@@ -46,7 +46,11 @@ static int vsock_loopback_cancel_pkt(struct vsock_sock *vsk)
 	return 0;
 }
 
-static bool vsock_loopback_dgram_allow(u32 cid, u32 port);
+static bool vsock_loopback_dgram_allow(u32 cid, u32 port)
+{
+	return true;
+}
+
 static bool vsock_loopback_seqpacket_allow(u32 remote_cid);
 
 static struct virtio_transport loopback_transport = {
@@ -95,11 +99,6 @@ static struct virtio_transport loopback_transport = {
 
 	.send_pkt = vsock_loopback_send_pkt,
 };
-
-static bool vsock_loopback_dgram_allow(u32 cid, u32 port)
-{
-	return true;
-}
 
 static bool vsock_loopback_seqpacket_allow(u32 remote_cid)
 {
