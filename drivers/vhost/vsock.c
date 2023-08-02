@@ -431,7 +431,22 @@ static bool vhost_vsock_more_replies(struct vhost_vsock *vsock)
 	return val < vq->num;
 }
 
-static bool vhost_transport_dgram_allow(u32 cid, u32 port);
+static bool vhost_transport_dgram_allow(u32 cid, u32 port)
+{
+	struct vhost_vsock *vsock;
+	bool dgram_allow = false;
+
+	rcu_read_lock();
+	vsock = vhost_vsock_get(cid);
+
+	if (vsock)
+		dgram_allow = vsock->dgram_allow;
+
+	rcu_read_unlock();
+
+	return dgram_allow;
+}
+
 static bool vhost_transport_seqpacket_allow(u32 remote_cid);
 
 static struct virtio_transport vhost_transport = {
@@ -481,22 +496,6 @@ static struct virtio_transport vhost_transport = {
 
 	.send_pkt = vhost_transport_send_pkt,
 };
-
-static bool vhost_transport_dgram_allow(u32 cid, u32 port)
-{
-	struct vhost_vsock *vsock;
-	bool dgram_allow = false;
-
-	rcu_read_lock();
-	vsock = vhost_vsock_get(cid);
-
-	if (vsock)
-		dgram_allow = vsock->dgram_allow;
-
-	rcu_read_unlock();
-
-	return dgram_allow;
-}
 
 static bool vhost_transport_seqpacket_allow(u32 remote_cid)
 {

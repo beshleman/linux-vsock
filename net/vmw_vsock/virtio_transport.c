@@ -414,7 +414,21 @@ static void virtio_vsock_rx_done(struct virtqueue *vq)
 	queue_work(virtio_vsock_workqueue, &vsock->rx_work);
 }
 
-static bool virtio_transport_dgram_allow(u32 cid, u32 port);
+static bool virtio_transport_dgram_allow(u32 cid, u32 port)
+{
+	struct virtio_vsock *vsock;
+	bool dgram_allow;
+
+	dgram_allow = false;
+	rcu_read_lock();
+	vsock = rcu_dereference(the_virtio_vsock);
+	if (vsock)
+		dgram_allow = vsock->dgram_allow;
+	rcu_read_unlock();
+
+	return dgram_allow;
+}
+
 static bool virtio_transport_seqpacket_allow(u32 remote_cid);
 
 static struct virtio_transport virtio_transport = {
@@ -464,21 +478,6 @@ static struct virtio_transport virtio_transport = {
 
 	.send_pkt = virtio_transport_send_pkt,
 };
-
-static bool virtio_transport_dgram_allow(u32 cid, u32 port)
-{
-	struct virtio_vsock *vsock;
-	bool dgram_allow;
-
-	dgram_allow = false;
-	rcu_read_lock();
-	vsock = rcu_dereference(the_virtio_vsock);
-	if (vsock)
-		dgram_allow = vsock->dgram_allow;
-	rcu_read_unlock();
-
-	return dgram_allow;
-}
 
 static bool virtio_transport_seqpacket_allow(u32 remote_cid)
 {
