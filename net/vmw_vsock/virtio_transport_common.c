@@ -815,9 +815,7 @@ virtio_transport_dgram_enqueue(struct vsock_sock *vsk,
 			       struct msghdr *msg,
 			       size_t dgram_len)
 {
-	/* Here we are only using the info struct to retain style uniformity
-	 * and to ease future refactoring and merging.
-	 */
+	/* Here we are only using the info struct for style uniformity. */
 	struct virtio_vsock_pkt_info info_stack = {
 		.op = VIRTIO_VSOCK_OP_RW,
 		.msg = msg,
@@ -839,12 +837,6 @@ virtio_transport_dgram_enqueue(struct vsock_sock *vsk,
 
 	t_ops = virtio_transport_get_ops(vsk);
 	if (unlikely(!t_ops))
-		return -EFAULT;
-
-	/* Unlike some of our other sending functions, this function is not
-	 * intended for use without a msghdr.
-	 */
-	if (WARN_ONCE(!msg, "vsock dgram bug: no msghdr found for dgram enqueue\n"))
 		return -EFAULT;
 
 	noblock = msg->msg_flags & MSG_DONTWAIT;
