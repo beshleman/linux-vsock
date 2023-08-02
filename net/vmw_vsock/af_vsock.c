@@ -590,6 +590,13 @@ int vsock_assign_transport(struct vsock_sock *vsk, struct vsock_sock *psk)
 		}
 	}
 
+	if (sk->sk_type == SOCK_DGRAM) {
+		if (!new_transport->dgram_addr_init) {
+			module_put(new_transport->module);
+			return -ESOCKTNOSUPPORT;
+		}
+	}
+
 	ret = new_transport->init(vsk, psk);
 	if (ret) {
 		module_put(new_transport->module);
