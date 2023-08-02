@@ -877,8 +877,10 @@ virtio_transport_dgram_enqueue(struct vsock_sock *vsk,
 
 	payload = skb_put(skb, dgram_len);
 	err = memcpy_from_msg(payload, msg, dgram_len);
-	if (err)
+	if (err) {
+		kfree_skb(skb);
 		return err;
+	}
 
 	trace_virtio_transport_alloc_pkt(src_cid, src_port,
 					 remote_addr->svm_cid,
