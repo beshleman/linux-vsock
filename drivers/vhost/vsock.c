@@ -96,7 +96,7 @@ vhost_transport_error(struct sk_buff *skb, int err)
 	struct sock_exterr_skb *serr;
 	struct sock *sk = skb->sk;
 
-	serr = SKB_EXT_ERR(clone);
+	serr = SKB_EXT_ERR(skb);
 	memset(serr, 0, sizeof(*serr));
 	serr->ee.ee_errno = err;
 	serr->ee.ee_origin = SO_EE_ORIGIN_NONE;
