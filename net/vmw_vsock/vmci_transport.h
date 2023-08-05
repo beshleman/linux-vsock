@@ -130,4 +130,9 @@ int vmci_transport_send_waiting_write(struct sock *sk,
 int vmci_transport_send_waiting_read(struct sock *sk,
 				     struct vmci_transport_waiting_info *wait);
 
+/* The datagram socket layer requires that the skb header leaves buffer space
+ * for the common header.
+ */
+static_assert(sizeof(struct vmci_datagram) >= sizeof(struct vsock_common_hdr));
+
 #endif

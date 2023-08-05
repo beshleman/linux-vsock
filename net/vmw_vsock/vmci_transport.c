@@ -614,6 +614,7 @@ static int vmci_transport_recv_dgram_cb(void *data, struct vmci_datagram *dg)
 	size_t size;
 	struct sk_buff *skb;
 	struct vsock_sock *vsk;
+	int err;
 
 	sk = (struct sock *)data;
 
@@ -642,6 +643,11 @@ static int vmci_transport_recv_dgram_cb(void *data, struct vmci_datagram *dg)
 	skb_put(skb, size);
 	memcpy(skb->data, dg, size);
 	skb_pull(skb, VMCI_DG_HEADERSIZE);
+	err = vsock_common_hdr_init(skb, dg->src.context, dg->src.resource);
+	if (WARN_ONCE(err, "vmci/vsock bug: error setting common dgram hdr\n")) {
+		kfree_skb(skb);
+		return VMCI_ERROR_INVALID_ARGS;
+	}
 	sk_receive_skb(sk, skb, 0);
 
 	return VMCI_SUCCESS;

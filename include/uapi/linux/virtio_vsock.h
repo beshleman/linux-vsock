@@ -37,6 +37,7 @@
 #include <linux/types.h>
 #include <linux/virtio_ids.h>
 #include <linux/virtio_config.h>
+#include <net/af_vsock.h>
 
 /* The feature bitmap for virtio vsock */
 #define VIRTIO_VSOCK_F_SEQPACKET	1	/* SOCK_SEQPACKET supported */
@@ -66,6 +67,11 @@ struct virtio_vsock_hdr {
 	__le32	buf_alloc;
 	__le32	fwd_cnt;
 } __attribute__((packed));
+
+/* The datagram socket layer requires that the skb header leaves buffer space
+ * for the common header.
+ */
+static_assert(sizeof(struct virtio_vsock_hdr) >= sizeof(struct vsock_common_hdr));
 
 enum virtio_vsock_type {
 	VIRTIO_VSOCK_TYPE_STREAM = 1,

@@ -1416,7 +1416,6 @@ out:
 int vsock_dgram_recvmsg(struct socket *sock, struct msghdr *msg,
 			size_t len, int flags)
 {
-	const struct vsock_transport *transport;
 #ifdef CONFIG_BPF_SYSCALL
 	const struct proto *prot;
 #endif
@@ -1441,7 +1440,6 @@ int vsock_dgram_recvmsg(struct socket *sock, struct msghdr *msg,
 	if (unlikely(flags & MSG_ERRQUEUE))
 		return sock_recv_errqueue(sk, msg, len, SOL_VSOCK, 0);
 
-	transport = vsk->transport;
 
 	/* Retrieve the head sk_buff from the socket's receive queue. */
 	err = 0;
@@ -1462,10 +1460,13 @@ int vsock_dgram_recvmsg(struct socket *sock, struct msghdr *msg,
 		goto out;
 
 	if (msg->msg_name) {
+		struct vsock_common_hdr *hdr;
+
 		/* Provide the address of the sender. */
 		DECLARE_SOCKADDR(struct sockaddr_vm *, vm_addr, msg->msg_name);
 
-		transport->dgram_addr_init(skb, vm_addr);
+		hdr = (struct vsock_common_hdr *)skb->head;
+		vsock_addr_init(vm_addr, hdr->cid, hdr->port);
 		msg->msg_namelen = sizeof(*vm_addr);
 	}
 	err = payload_len;

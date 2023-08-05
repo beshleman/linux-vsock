@@ -245,4 +245,25 @@ static inline void __init vsock_bpf_build_proto(void)
 {}
 #endif
 
+/**** DGRAM ****/
+struct vsock_common_hdr {
+	unsigned int cid;
+	unsigned int port;
+};
+
+static inline int
+vsock_common_hdr_init(struct sk_buff *skb, unsigned int cid, unsigned int port)
+{
+	struct vsock_common_hdr *hdr;
+
+	if (skb_headroom(skb) < sizeof(*hdr))
+		return -EINVAL;
+
+	hdr = (struct vsock_common_hdr *)skb->head;
+	hdr->cid = cid;
+	hdr->port = port;
+
+	return 0;
+}
+
 #endif /* __AF_VSOCK_H__ */

@@ -1209,7 +1209,19 @@ virtio_transport_dgram_kfree_skb(struct sk_buff *skb, int err)
 static void
 virtio_transport_recv_dgram(struct sock *sk, struct sk_buff *skb)
 {
+	struct virtio_vsock_hdr *hdr;
+	unsigned int cid, port;
 	int err;
+
+	hdr = virtio_vsock_hdr(skb);
+	cid = le64_to_cpu(hdr->src_cid);
+	port = le64_to_cpu(hdr->src_port);
+
+	err = vsock_common_hdr_init(skb, cid, port);
+	if (WARN_ONCE(err, "virtio/vsock bug: invalid skb\n")) {
+		kfree_skb(skb);
+		return;
+	}
 
 	err = sock_queue_rcv_skb(sk, skb);
 	if (err) {
