@@ -393,11 +393,12 @@ EXPORT_SYMBOL_GPL(vsock_find_connected_socket);
 
 void vsock_remove_sock(struct vsock_sock *vsk)
 {
-	if (sock_type_connectible(sk_vsock(vsk)->sk_type))
+	if (sock_type_connectible(sk_vsock(vsk)->sk_type)) {
 		vsock_remove_bound(vsk);
-	else
+		vsock_remove_connected(vsk);
+	} else {
 		vsock_remove_dgram_bound(vsk);
-	vsock_remove_connected(vsk);
+	}
 }
 EXPORT_SYMBOL_GPL(vsock_remove_sock);
 
@@ -946,7 +947,7 @@ static void __vsock_release(struct sock *sk, int level)
 
 		if (vsk->transport)
 			vsk->transport->release(vsk);
-		else if (sock_type_connectible(sk->sk_type))
+		else
 			vsock_remove_sock(vsk);
 
 		sock_orphan(sk);
