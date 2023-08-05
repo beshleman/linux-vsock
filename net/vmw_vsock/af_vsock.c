@@ -1456,6 +1456,11 @@ int vsock_dgram_recvmsg(struct socket *sock, struct msghdr *msg,
 	if (unlikely(flags & MSG_ERRQUEUE))
 		return sock_recv_errqueue(sk, msg, len, SOL_VSOCK, 0);
 
+	lock_sock(sk);
+	err = vsock_auto_bind(vsk);
+	release_sock(sk);
+	if (err)
+		return err;
 
 	/* Retrieve the head sk_buff from the socket's receive queue. */
 	err = 0;
