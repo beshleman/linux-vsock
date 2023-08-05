@@ -2476,9 +2476,7 @@ static const struct proto_ops vsock_seqpacket_ops = {
 static int vsock_create(struct net *net, struct socket *sock,
 			int protocol, int kern)
 {
-	struct vsock_sock *vsk;
 	struct sock *sk;
-	int ret;
 
 	if (!sock)
 		return -EINVAL;
@@ -2506,17 +2504,7 @@ static int vsock_create(struct net *net, struct socket *sock,
 	if (!sk)
 		return -ENOMEM;
 
-	vsk = vsock_sk(sk);
-
-	if (sock->type == SOCK_DGRAM) {
-		ret = vsock_assign_transport(vsk, NULL);
-		if (ret < 0) {
-			sock_put(sk);
-			return ret;
-		}
-	}
-
-	vsock_insert_unbound(vsk);
+	vsock_insert_unbound(vsock_sk(sk));
 
 	return 0;
 }
