@@ -793,10 +793,12 @@ static int vsock_bind_dgram(struct vsock_sock *vsk,
 {
 	int err;
 
-	if (vsk->transport && vsk->transport->dgram_bind) {
-		err = vsk->transport->dgram_bind(vsk, addr);
-		if (err)
-			return err;
+	if (vsk->transport) {
+		if (vsk->transport->dgram_bind) {
+			err = vsk->transport->dgram_bind(vsk, addr);
+			if (err)
+				return err;
+		}
 	} else if (transport_dgram_fallback) {
 		if (!try_module_get(transport_dgram_fallback->module))
 			return -ENODEV;
