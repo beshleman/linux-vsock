@@ -809,6 +809,19 @@ int virtio_transport_shutdown(struct vsock_sock *vsk, int mode)
 }
 EXPORT_SYMBOL_GPL(virtio_transport_shutdown);
 
+/* Only for use by datagrams */
+static inline const struct virtio_transport *
+virtio_transport_get_ops_nosock(unsigned int cid, __u8 flags)
+{
+	const struct vsock_transport *t;
+
+	t = vsock_dgram_lookup_transport(cid, flags);
+	if (!t)
+		return NULL;
+
+	return container_of(t, struct virtio_transport, transport);
+}
+
 int
 virtio_transport_dgram_enqueue(struct vsock_sock *vsk,
 			       struct sockaddr_vm *remote_addr,
@@ -835,7 +848,12 @@ virtio_transport_dgram_enqueue(struct vsock_sock *vsk,
 	if (dgram_len > VIRTIO_VSOCK_MAX_PKT_BUF_SIZE)
 		return -EMSGSIZE;
 
-	t_ops = virtio_transport_get_ops(vsk);
+	if (msg->msg_name)
+		t_ops = virtio_transport_get_ops_nosock(remote_addr->svm_cid,
+							remote_addr->svm_flags);
+	else
+		t_ops = virtio_transport_get_ops(vsk);
+
 	if (unlikely(!t_ops))
 		return -EFAULT;
 

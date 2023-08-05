@@ -502,7 +502,7 @@ vsock_connectible_lookup_transport(unsigned int cid, __u8 flags)
 	return transport;
 }
 
-static const struct vsock_transport *
+const struct vsock_transport *
 vsock_dgram_lookup_transport(unsigned int cid, __u8 flags)
 {
 	const struct vsock_transport *transport;
@@ -513,6 +513,7 @@ vsock_dgram_lookup_transport(unsigned int cid, __u8 flags)
 
 	return transport_dgram_fallback;
 }
+EXPORT_SYMBOL_GPL(vsock_dgram_lookup_transport);
 
 /* Assign a transport to a socket and call the .init transport callback.
  *
