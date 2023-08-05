@@ -790,18 +790,33 @@ static int __vsock_bind_connectible(struct vsock_sock *vsk,
 static int vsock_bind_dgram(struct vsock_sock *vsk,
 			    struct sockaddr_vm *addr)
 {
-	if (!vsk->transport || !vsk->transport->dgram_bind) {
-		int retval;
+	int err;
 
-		spin_lock_bh(&vsock_dgram_table_lock);
-		retval = vsock_bind_common(vsk, addr, vsock_dgram_bind_table,
-					   VSOCK_HASH_SIZE);
-		spin_unlock_bh(&vsock_dgram_table_lock);
+	if (vsk->transport && vsk->transport->dgram_bind) {
+		err = vsk->transport->dgram_bind(vsk, addr);
+		if (err)
+			return err;
+	} else if (transport_dgram_fallback) {
+		if (!try_module_get(transport_dgram_fallback->module))
+			return -ENODEV;
 
-		return retval;
+		err = transport_dgram_fallback->init(vsk, NULL);
+		if (err) {
+			module_put(transport_dgram_fallback->module);
+			return err;
+		}
+
+		err = transport_dgram_fallback->dgram_bind(vsk, addr);
+		module_put(transport_dgram_fallback->module);
+		if (err)
+			return err;
 	}
 
-	return vsk->transport->dgram_bind(vsk, addr);
+	spin_lock_bh(&vsock_dgram_table_lock);
+	err = vsock_bind_common(vsk, addr, vsock_dgram_bind_table,
+				VSOCK_HASH_SIZE);
+	spin_unlock_bh(&vsock_dgram_table_lock);
+	return err;
 }
 
 static int __vsock_bind(struct sock *sk, struct sockaddr_vm *addr)
