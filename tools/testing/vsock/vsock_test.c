@@ -1060,6 +1060,40 @@ static void test_stream_virtio_skb_merge_server(const struct test_opts *opts)
 	close(fd);
 }
 
+static void test_dgram_single_bind_only(const struct test_opts *opts)
+{
+	union {
+		struct sockaddr sa;
+		struct sockaddr_vm svm;
+	} addr;
+	socklen_t addrlen;
+	int fd1, fd2;
+
+	fd1 = vsock_dgram_bind(VMADDR_CID_ANY, 1234);
+	if (fd1 < 0) {
+		perror("bind");
+		exit(EXIT_FAILURE);
+	}
+
+	addrlen = sizeof(addr);
+	if (getsockname(fd1, (struct sockaddr *)&addr, &addrlen)) {
+		perror("getsockname");
+		exit(EXIT_FAILURE);
+	}
+
+	fd2 = socket(AF_VSOCK, SOCK_DGRAM, 0);
+	if (fd2 < 0) {
+		perror("socket");
+		exit(EXIT_FAILURE);
+	}
+
+	fd2 = bind(fd2, &addr.sa, sizeof(addr.svm));
+	if (fd2 > 0) {
+		fprintf(stderr, "expected bind(2) failure\n");
+		exit(EXIT_FAILURE);
+	}
+}
+
 static void test_dgram_sendto_client(const struct test_opts *opts)
 {
 	union {
@@ -1772,6 +1806,10 @@ static struct test_case test_cases[] = {
 		.name = "SOCK_STREAM virtio skb merge",
 		.run_client = test_stream_virtio_skb_merge_client,
 		.run_server = test_stream_virtio_skb_merge_server,
+	},
+	{
+		.name = "SOCK_DGRAM single bind only",
+		.run_client = test_dgram_single_bind_only,
 	},
 	{
 		.name = "SOCK_DGRAM client sendto",
