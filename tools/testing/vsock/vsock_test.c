@@ -1587,7 +1587,7 @@ static void test_dgram_drop_big_packets_server(const struct test_opts *opts)
 	int fd;
 
 	if (opts->peer_cid <= VMADDR_CID_HOST) {
-		printf("The server's peer must be a guest (not CID %u), skipped...\n",
+		printf("The server's peer must be a guest (not CID %u), skipped...",
 		       opts->peer_cid);
 		return;
 	}
@@ -1629,7 +1629,7 @@ static void test_dgram_drop_big_packets_client(const struct test_opts *opts)
 	unsigned long buf_size = getpagesize();
 
 	if (opts->peer_cid > VMADDR_CID_HOST) {
-		printf("The client's peer must be the host (not CID %u), skipped...\n",
+		printf("The client's peer must be the host (not CID %u), skipped...",
 		       opts->peer_cid);
 		return;
 	}
