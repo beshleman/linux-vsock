@@ -64,8 +64,22 @@ struct virtio_vsock_hdr {
 	__le16	type;		/* enum virtio_vsock_type */
 	__le16	op;		/* enum virtio_vsock_op */
 	__le32	flags;
-	__le32	buf_alloc;
-	__le32	fwd_cnt;
+	union {
+		/* Stream/seqpacket buffer allocation */
+		__le32	buf_alloc;
+		/* Datagram sequence number */
+		__le32	seq;
+	};
+	union {
+		/* Stream/seqpacket forward count */
+		__le32	fwd_cnt;
+		struct {
+			/* Datagram fragment offset */
+			__le16	frag_offset;
+			/* Datagram reserved */
+			__le16	reserved;
+		} dgram;
+	};
 } __attribute__((packed));
 
 /* The datagram socket layer requires that the skb header leaves buffer space
@@ -107,6 +121,8 @@ enum virtio_vsock_shutdown {
 enum virtio_vsock_rw {
 	VIRTIO_VSOCK_SEQ_EOM = 1,
 	VIRTIO_VSOCK_SEQ_EOR = 2,
+	/* To tell receiver that more datagram fragments are coming */
+	VIRTIO_VSOCK_DGRAM_MF = 3,
 };
 
 #endif /* _UAPI_LINUX_VIRTIO_VSOCK_H */

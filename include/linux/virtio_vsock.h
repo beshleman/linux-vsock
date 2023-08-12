@@ -7,6 +7,7 @@
 #include <net/sock.h>
 #include <net/af_vsock.h>
 
+
 #define VIRTIO_VSOCK_SKB_HEADROOM (sizeof(struct virtio_vsock_hdr))
 
 struct virtio_vsock_skb_cb {
@@ -240,4 +241,6 @@ void virtio_transport_put_credit(struct virtio_vsock_sock *vvs, u32 credit);
 void virtio_transport_deliver_tap_pkt(struct sk_buff *skb);
 int virtio_transport_purge_skbs(void *vsk, struct sk_buff_head *list);
 int virtio_transport_read_skb(struct vsock_sock *vsk, skb_read_actor_t read_actor);
+int virtio_transport_common_init(void);
+int virtio_transport_common_deinit(void);
 #endif /* _LINUX_VIRTIO_VSOCK_H */

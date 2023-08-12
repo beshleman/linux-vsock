@@ -789,9 +789,15 @@ static int __init virtio_vsock_init(void)
 {
 	int ret;
 
+	ret = virtio_transport_common_init();
+	if (ret)
+		return ret;
+
 	virtio_vsock_workqueue = alloc_workqueue("virtio_vsock", 0, 0);
-	if (!virtio_vsock_workqueue)
-		return -ENOMEM;
+	if (!virtio_vsock_workqueue) {
+		ret = -ENOMEM;
+		goto out_common;
+	}
 
 	ret = vsock_core_register(&virtio_transport.transport,
 				  VSOCK_TRANSPORT_F_G2H);
@@ -808,6 +814,8 @@ out_vci:
 	vsock_core_unregister(&virtio_transport.transport);
 out_wq:
 	destroy_workqueue(virtio_vsock_workqueue);
+out_common:
+	virtio_transport_common_deinit();
 	return ret;
 }
 

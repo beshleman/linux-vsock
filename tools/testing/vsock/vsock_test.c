@@ -1092,6 +1092,9 @@ static void test_dgram_single_bind_only(const struct test_opts *opts)
 		fprintf(stderr, "expected bind(2) failure\n");
 		exit(EXIT_FAILURE);
 	}
+
+	close(fd1);
+	close(fd2);
 }
 
 static void test_dgram_sendto_client(const struct test_opts *opts)
@@ -1609,6 +1612,8 @@ void vsock_recv_error(int fd)
 	}
 }
 
+#define DGRAM_OVERFLOW 1
+
 /*
  * Attempt to send a packet larger than the client's RX buffer. Test that the
  * packet was dropped and that there is an error in the error queue.
@@ -1617,7 +1622,9 @@ static void test_dgram_drop_big_packets_server(const struct test_opts *opts)
 {
 	unsigned long client_rx_buf_size;
 	size_t buf_size;
+	unsigned long i;
 	void *buf;
+	char *p;
 	int fd;
 
 	if (opts->peer_cid <= VMADDR_CID_HOST) {
@@ -1637,11 +1644,17 @@ static void test_dgram_drop_big_packets_server(const struct test_opts *opts)
 
 	client_rx_buf_size = control_readulong();
 
-	buf_size = client_rx_buf_size + 1;
+	buf_size = client_rx_buf_size + DGRAM_OVERFLOW;
 	buf = malloc(buf_size);
 	if (!buf) {
 		perror("malloc");
 		exit(EXIT_FAILURE);
+	}
+
+	/* Write a predictable sequence to the buffer */
+	p = buf;
+	for (i = 0; i < client_rx_buf_size + DGRAM_OVERFLOW; i++) {
+		*p++ = (i % 10) + '0';
 	}
 
 	/* Even though the buffer is exceeded, the send() should still succeed. */
@@ -1650,17 +1663,21 @@ static void test_dgram_drop_big_packets_server(const struct test_opts *opts)
 		exit(EXIT_FAILURE);
 	}
 
-	vsock_recv_error(fd);
-
 	/* Notify the server that the client has finished */
-	control_writeln("DONE");
+	control_writeln("SENDDONE");
+	control_expectln("DONE");
 
 	close(fd);
 }
 
 static void test_dgram_drop_big_packets_client(const struct test_opts *opts)
 {
-	unsigned long buf_size = getpagesize();
+	unsigned long buf_size;
+	unsigned long i;
+	void *buf;
+	int err;
+	char *p;
+	int fd;
 
 	if (opts->peer_cid > VMADDR_CID_HOST) {
 		printf("The client's peer must be the host (not CID %u), skipped...",
@@ -1668,9 +1685,39 @@ static void test_dgram_drop_big_packets_client(const struct test_opts *opts)
 		return;
 	}
 
+	fd = vsock_dgram_bind(VMADDR_CID_ANY, 1234);
+	buf_size = getpagesize();
+	buf = malloc(buf_size + DGRAM_OVERFLOW);
+	if (!buf) {
+		perror("malloc");
+		exit(EXIT_FAILURE);
+	}
+
 	control_writeln("READY");
 	control_writeulong(buf_size);
-	control_expectln("DONE");
+	control_expectln("SENDDONE");
+
+	err = recv(fd, buf, buf_size + DGRAM_OVERFLOW, 0);
+	if (err < 0) {
+		perror("recv");
+		exit(EXIT_FAILURE);
+	}
+
+	if (err != buf_size + DGRAM_OVERFLOW) {
+		fprintf(stderr, "expected recv(2) to return 'buf_size + DGRAM_OVERFLOW' bytes\n");
+		exit(EXIT_FAILURE);
+	}
+
+	p = buf;
+	for (i = 0; i < buf_size + DGRAM_OVERFLOW; i++) {
+		if (*p++ !=  (i % 10) + '0') {
+			fprintf(stderr, "buffer recieved out-of-order\n");
+			exit(EXIT_FAILURE);
+		}
+	}
+
+	close(fd);
+	control_writeln("DONE");
 }
 
 static void test_stream_dgram_address_collision_client(const struct test_opts *opts)
@@ -1837,14 +1884,14 @@ static struct test_case test_cases[] = {
 		.run_server = test_dgram_bounds_unreliable_server,
 	},
 	{
-		.name = "SOCK_DGRAM drop big packets",
-		.run_client = test_dgram_drop_big_packets_client,
-		.run_server = test_dgram_drop_big_packets_server,
-	},
-	{
 		.name = "SOCK_STREAM and SOCK_DGRAM address collision",
 		.run_client = test_stream_dgram_address_collision_client,
 		.run_server = test_stream_dgram_address_collision_server,
+	},
+	{
+		.name = "SOCK_DGRAM drop big packets",
+		.run_client = test_dgram_drop_big_packets_client,
+		.run_server = test_dgram_drop_big_packets_server,
 	},
 	{},
 };

@@ -26,6 +26,269 @@
 /* Threshold for detecting small packets to copy */
 #define GOOD_COPY_LEN  128
 
+/* The hashmap size for outstanding fragmented datagrams */
+#define VIRTIO_VSOCK_FRAG_LIST_COUNT 256
+#define VIRTIO_VSOCK_HASH(port) ((port) % VIRTIO_VSOCK_HASH_SIZE)
+
+static atomic_t dgram_seq = ATOMIC_INIT(0);
+static struct workqueue_struct *virtio_transport_dgram_workqueue;
+static struct work_struct virtio_transport_dgram_frag_work;
+
+#define VIRTIO_VSOCK_HASH_BITS 10
+static DEFINE_HASHTABLE(virtio_transport_dgram_fragment_map, VIRTIO_VSOCK_HASH_BITS);
+
+struct virtio_transport_dgram_fragment_node {
+	struct rb_root root;
+	struct hlist_node node;
+};
+
+static void
+virtio_transport_dgram_kfree_skb(struct sk_buff *skb, int err)
+{
+	if (err == -ENOMEM)
+		kfree_skb_reason(skb, SKB_DROP_REASON_SOCKET_RCVBUFF);
+	else if (err == -ENOBUFS)
+		kfree_skb_reason(skb, SKB_DROP_REASON_PROTO_MEM);
+	else
+		kfree_skb(skb);
+}
+
+static int rbtree_frag_cmp(struct rb_node *a, const struct rb_node *b)
+{
+	struct sk_buff *askb = rb_entry(a, struct sk_buff, rbnode);
+	struct sk_buff *bskb = rb_entry(b, struct sk_buff, rbnode);
+	struct virtio_vsock_hdr *ahdr, *bhdr;
+	__le16 a_off, b_off;
+
+	ahdr = virtio_vsock_hdr(askb);
+	bhdr = virtio_vsock_hdr(bskb);
+
+	a_off = le16_to_cpu(ahdr->dgram.frag_offset);
+	b_off = le16_to_cpu(bhdr->dgram.frag_offset);
+
+	if (a_off == b_off)
+		return 0;
+
+	return a_off < b_off ? -1 : 1;
+}
+
+/* TODO: the rb trees need to pruned by worker */
+/* TODO: flows need to be hased by src_cid, src_port, and seq */
+/* TODO: use cached rb tree */
+/* TODO: document why port is hash. More likely to have same CID using many ports
+ *       than many CIDs using one port, this assumptions reduces collisions */
+static inline struct rb_root *virtio_transport_frag_rb_root(struct sk_buff *skb)
+{
+	struct virtio_transport_dgram_fragment_node *p;
+	struct virtio_vsock_hdr *hdr;
+	__le32 seq, port;
+	__le64 src_cid;
+
+	hdr = virtio_vsock_hdr(skb);
+
+	seq = le32_to_cpu(hdr->seq);
+	src_cid = le64_to_cpu(hdr->src_cid);
+	port = le32_to_cpu(hdr->src_port);
+
+	hash_for_each_possible(virtio_transport_dgram_fragment_map, p, node, port) {
+		struct virtio_vsock_hdr *curr_hdr;
+		struct rb_root *root = &p->root;
+		struct rb_node *node;
+		struct sk_buff *curr;
+		
+		node = rb_first(root);
+		curr = rb_entry(node, struct sk_buff, rbnode);
+		curr_hdr = virtio_vsock_hdr(curr);
+		
+		if (le32_to_cpu(curr_hdr->seq) == seq &&
+		    le64_to_cpu(curr_hdr->src_cid) == src_cid)
+			return root;
+	}
+
+	return NULL;
+}
+
+static struct rb_root *virtio_transport_frag_create_root(struct sk_buff *skb)
+{
+	struct virtio_transport_dgram_fragment_node *node;
+	struct virtio_vsock_hdr *hdr;
+	__le32 port;
+
+	node = kmalloc(sizeof(*node), GFP_KERNEL);
+	if (!node)
+		return NULL;
+
+	node->root = RB_ROOT;
+	hdr = virtio_vsock_hdr(skb);
+	port = le32_to_cpu(hdr->src_port);
+	hash_add(virtio_transport_dgram_fragment_map, &node->node, port);
+
+	return &node->root;
+}
+
+static void
+virtio_transport_dgram_fragment_insert(struct sk_buff *skb)
+{
+	struct rb_node *found;
+	struct rb_root *root;
+
+	root = virtio_transport_frag_rb_root(skb);
+	if (!root)
+		root = virtio_transport_frag_create_root(skb);
+
+	found = rb_find_add(&skb->rbnode, root, rbtree_frag_cmp);
+	if (found) {
+		pr_err_once("vsock: duplicate dgram frag offset found, dropping packet");
+		kfree_skb(skb);
+		return;
+	}
+
+	queue_work(virtio_transport_dgram_workqueue, &virtio_transport_dgram_frag_work);
+}
+
+static bool
+virtio_transport_dgram_is_frag(struct sk_buff *skb)
+{
+	struct virtio_vsock_hdr *hdr;
+
+	hdr = virtio_vsock_hdr(skb);
+
+	return (le32_to_cpu(hdr->flags) & VIRTIO_VSOCK_DGRAM_MF || 
+		le16_to_cpu(hdr->dgram.frag_offset) != 0);
+}
+
+/* The socket hash table is indexed by port, maps to a list of sockets.
+ * Each socket contains a fragment hashtable that maps seqnum to an rbtree of inflight fragments.
+ */
+
+#define VIRTIO_VSOCK_FRAG_ARRAY_SIZE 256
+#define VIRTIO_VSOCK_SOCKET_ARRAY_SIZE 256
+
+static struct sk_buff *
+virtio_transport_dgram_reassemble(void)
+{
+#if 0
+	struct sk_buff *skb, *p;
+	unsigned int port;
+
+	for (port = 0; port < VIRTIO_VSOCK_SOCKET_ARRAY_SIZE; port++)
+		struct inflight_fragments *frags, *l;
+		struct rb_root *root;
+
+		l = &socket_fragments_hashmap[port % VIRTIO_TRANSPORT_DATAGRAM_PACKET_HASH_COUNT];
+
+		list_for_each_entry(frags, l, list) {
+			root = frags->fragments;
+		}
+
+		for_each_packet(p, packet_hashtable->pkts) {
+			skb = virtio_transport_packet_assemble(p)
+			if (skb)
+				return skb;
+		}
+	}
+#endif
+
+	return NULL;
+}
+
+static inline bool
+virtio_transport_dgram_fragment_is_first(struct sk_buff *skb)
+{
+	struct virtio_vsock_hdr *hdr;
+
+	hdr = virtio_vsock_hdr(skb);
+
+	return ((le32_to_cpu(hdr->flags) & VIRTIO_VSOCK_DGRAM_MF) &&
+		le16_to_cpu(hdr->dgram.frag_offset) == 0);
+}
+
+static inline bool
+virtio_transport_dgram_fragment_is_last(struct sk_buff *skb)
+{
+	struct virtio_vsock_hdr *hdr;
+
+	hdr = virtio_vsock_hdr(skb);
+
+	return !(le32_to_cpu(hdr->flags) & VIRTIO_VSOCK_DGRAM_MF);
+}
+
+static bool
+virtio_transport_dgram_fragment_complete(struct sk_buff *skb, unsigned int *pkt_len)
+{
+	struct rb_node *node, next;
+	unsigned int total_pkt_len = 0;
+	bool is_complete = false;
+	struct rb_root *root;
+	unsigned int off;
+
+	root = virtio_transport_frag_rb_root(skb);
+	if (!root)
+		return false;
+
+	for (node = rb_first(root); node; node = rb_next(node)) {
+		struct virtio_vsock_hdr *hdr;
+		unsigned int expected;
+		struct sk_buff *curr;
+
+		curr = rb_entry(node, struct sk_buff, rbnode);
+		hdr = virtio_vsock_hdr(curr);
+
+		expected = le16_to_cpu(hdr->dgram.frag_offset);
+		if (total_pkt_len != expected)
+			return false;
+
+		total_pkt_len += le32_to_cpu(hdr->len);
+
+		/* If this is the last fragment, mark the complete flag. */
+		if (!(le32_to_cpu(hdr->flags) & VIRTIO_VSOCK_DGRAM_MF)) {
+			is_complete = true;
+			break;
+		}
+	}
+
+	*pkt_len = total_pkt_len;
+	return is_complete;
+}
+
+static void
+virtio_transport_assemble_dgram_frag_work(struct work_struct *work)
+{
+	struct vsock_sock *vsk;
+	bool enqueued = false;
+	struct sk_buff *skb;
+	struct sock *sk;
+	int err;
+
+	while ((skb = virtio_transport_dgram_reassemble()) != NULL) {
+		struct virtio_vsock_hdr *hdr;
+		unsigned int cid, port;
+
+		hdr = virtio_vsock_hdr(skb);
+		cid = le64_to_cpu(hdr->src_cid);
+		port = le64_to_cpu(hdr->src_port);
+
+		sk = NULL;
+		vsk = NULL;
+		err = vsock_common_hdr_init(skb, cid, port);
+		if (WARN_ONCE(err, "virtio/vsock bug: invalid skb\n")) {
+			kfree_skb(skb);
+			return;
+		}
+
+		err = sock_queue_rcv_skb(sk, skb);
+		if (err) {
+			virtio_transport_dgram_kfree_skb(skb, err);
+			return;
+		}
+
+		enqueued = true;
+	}
+
+	if (enqueued)
+		sk->sk_data_ready(sk);
+}
+
 static const struct virtio_transport *
 virtio_transport_get_ops(struct vsock_sock *vsk)
 {
@@ -647,20 +910,23 @@ int virtio_transport_do_socket_init(struct vsock_sock *vsk,
 
 	vsk->trans = vvs;
 	vvs->vsk = vsk;
-	if (psk && psk->trans) {
-		struct virtio_vsock_sock *ptrans = psk->trans;
 
-		vvs->peer_buf_alloc = ptrans->peer_buf_alloc;
+	if (sk_vsock(vsk)->sk_type != SOCK_DGRAM) {
+		if (psk && psk->trans) {
+			struct virtio_vsock_sock *ptrans = psk->trans;
+
+			vvs->peer_buf_alloc = ptrans->peer_buf_alloc;
+		}
+
+		if (vsk->buffer_size > VIRTIO_VSOCK_MAX_BUF_SIZE)
+			vsk->buffer_size = VIRTIO_VSOCK_MAX_BUF_SIZE;
+
+		vvs->buf_alloc = vsk->buffer_size;
+		skb_queue_head_init(&vvs->rx_queue);
 	}
-
-	if (vsk->buffer_size > VIRTIO_VSOCK_MAX_BUF_SIZE)
-		vsk->buffer_size = VIRTIO_VSOCK_MAX_BUF_SIZE;
-
-	vvs->buf_alloc = vsk->buffer_size;
 
 	spin_lock_init(&vvs->rx_lock);
 	spin_lock_init(&vvs->tx_lock);
-	skb_queue_head_init(&vvs->rx_queue);
 
 	return 0;
 }
@@ -835,6 +1101,7 @@ virtio_transport_dgram_enqueue(struct vsock_sock *vsk,
 		.vsk = vsk,
 		.type = VIRTIO_VSOCK_TYPE_DGRAM,
 	};
+	struct virtio_vsock_sock *vvs = vsk->trans;
 	const struct virtio_transport *t_ops;
 	struct virtio_vsock_pkt_info *info;
 	struct sock *sk = sk_vsock(vsk);
@@ -874,14 +1141,16 @@ virtio_transport_dgram_enqueue(struct vsock_sock *vsk,
 
 	info = &info_stack;
 	hdr = virtio_vsock_hdr(skb);
-	hdr->type	= cpu_to_le16(info->type);
-	hdr->op		= cpu_to_le16(info->op);
-	hdr->src_cid	= cpu_to_le64(src_cid);
-	hdr->dst_cid	= cpu_to_le64(remote_addr->svm_cid);
-	hdr->src_port	= cpu_to_le32(src_port);
-	hdr->dst_port	= cpu_to_le32(remote_addr->svm_port);
-	hdr->flags	= cpu_to_le32(info->flags);
-	hdr->len	= cpu_to_le32(dgram_len);
+	hdr->type		= cpu_to_le16(info->type);
+	hdr->op			= cpu_to_le16(info->op);
+	hdr->src_cid		= cpu_to_le64(src_cid);
+	hdr->dst_cid		= cpu_to_le64(remote_addr->svm_cid);
+	hdr->src_port		= cpu_to_le32(src_port);
+	hdr->dst_port		= cpu_to_le32(remote_addr->svm_port);
+	hdr->flags		= cpu_to_le32(info->flags);
+	hdr->len		= cpu_to_le32(dgram_len);
+	hdr->seq		= cpu_to_le32(atomic_inc_return(&dgram_seq));
+	hdr->dgram.frag_offset	= 0;
 
 	skb_set_owner_w(skb, sk);
 
@@ -1192,14 +1461,79 @@ out:
 }
 
 static void
-virtio_transport_dgram_kfree_skb(struct sk_buff *skb, int err)
+print_frag_info(struct sk_buff *skb)
 {
-	if (err == -ENOMEM)
-		kfree_skb_reason(skb, SKB_DROP_REASON_SOCKET_RCVBUFF);
-	else if (err == -ENOBUFS)
-		kfree_skb_reason(skb, SKB_DROP_REASON_PROTO_MEM);
-	else
-		kfree_skb(skb);
+	struct virtio_vsock_hdr *hdr;
+	__le64 cid, port;
+	__le32 off, seq;
+
+	hdr = virtio_vsock_hdr(skb);
+	cid = le64_to_cpu(hdr->src_cid);
+	port = le64_to_cpu(hdr->src_port);
+	off = le16_to_cpu(hdr->dgram.frag_offset);
+	seq = le32_to_cpu(hdr->seq);
+
+	printk(KERN_ERR "%s: skb=%p, cid=%llu, port=%llu, off=%u, seq=%u, MF=%d\n",
+		__func__, skb, cid, port, off, seq,
+		le32_to_cpu(hdr->flags) & VIRTIO_VSOCK_DGRAM_MF);
+}
+
+static struct sk_buff *
+virtio_transport_dgram_fragment_assemble(struct sk_buff *skb, unsigned int pkt_len)
+{
+	struct virtio_vsock_hdr *newhdr, *hdr;
+	unsigned int total_pkt_len = 0;
+	struct rb_node *node, next;
+	bool is_complete = false;
+	struct rb_root *root;
+	struct sk_buff *new;
+	unsigned int off;
+
+	new = virtio_vsock_alloc_skb(pkt_len + sizeof(struct virtio_vsock_hdr),
+				     GFP_KERNEL);
+	if (!new)
+		return NULL;
+
+	newhdr = virtio_vsock_hdr(new);
+	hdr = virtio_vsock_hdr(skb);
+
+	newhdr->type		= hdr->type;
+	newhdr->op		= hdr->op;
+	newhdr->src_cid		= hdr->src_cid;
+	newhdr->dst_cid		= hdr->dst_cid;
+	newhdr->src_port	= hdr->src_port;
+	newhdr->dst_port	= hdr->dst_port;
+	newhdr->flags		= hdr->flags;
+
+	newhdr->flags &= ~cpu_to_le32(VIRTIO_VSOCK_DGRAM_MF);
+	newhdr->len = cpu_to_le32(pkt_len);
+	virtio_vsock_skb_rx_put(new);
+
+	root = virtio_transport_frag_rb_root(skb);
+	if (!root)
+		return NULL;
+
+	for (node = rb_first(root); node; node = rb_next(node)) {
+		unsigned int expected;
+		struct sk_buff *curr;
+
+		curr = rb_entry(node, struct sk_buff, rbnode);
+		hdr = virtio_vsock_hdr(curr);
+
+		expected = le16_to_cpu(hdr->dgram.frag_offset);
+		if (total_pkt_len != expected)
+			return NULL;
+
+		memcpy(new->data + total_pkt_len, curr->data, le32_to_cpu(hdr->len));
+
+		/* TODO: add curr to list or flag to be freed later */
+		total_pkt_len += le32_to_cpu(hdr->len);
+
+		if (!(le32_to_cpu(hdr->flags) & VIRTIO_VSOCK_DGRAM_MF))
+			break;
+	}
+
+	return new;
 }
 
 /* This function takes ownership of the skb.
@@ -1210,8 +1544,27 @@ static void
 virtio_transport_recv_dgram(struct sock *sk, struct sk_buff *skb)
 {
 	struct virtio_vsock_hdr *hdr;
-	unsigned int cid, port;
+	__le64 cid;
+	__le32 port;
 	int err;
+
+	print_frag_info(skb);
+
+	if (virtio_transport_dgram_is_frag(skb)) {
+		unsigned int pkt_len;
+		struct sk_buff *new;
+	
+		virtio_transport_dgram_fragment_insert(skb);
+		if (!virtio_transport_dgram_fragment_complete(skb, &pkt_len)) {
+			return;
+		}
+
+		new = virtio_transport_dgram_fragment_assemble(skb, pkt_len);
+		if (!new)
+			return;
+
+		skb = new;
+	}
 
 	hdr = virtio_vsock_hdr(skb);
 	cid = le64_to_cpu(hdr->src_cid);
@@ -1597,6 +1950,27 @@ void virtio_transport_dgram_addr_init(struct sk_buff *skb,
 	vsock_addr_init(addr, cid, port);
 }
 EXPORT_SYMBOL_GPL(virtio_transport_dgram_addr_init);
+
+int virtio_transport_common_init(void)
+{
+	virtio_transport_dgram_workqueue = alloc_workqueue("virtio-vsock-dgram", 0, 0);
+	if (!virtio_transport_dgram_workqueue)
+		return -ENOMEM;
+
+	hash_init(virtio_transport_dgram_fragment_map);
+
+	INIT_WORK(&virtio_transport_dgram_frag_work,
+		  virtio_transport_assemble_dgram_frag_work);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(virtio_transport_common_init);
+
+int virtio_transport_common_deinit(void)
+{
+	return 0;
+}
+EXPORT_SYMBOL_GPL(virtio_transport_common_deinit);
 
 MODULE_LICENSE("GPL v2");
 MODULE_AUTHOR("Asias He");

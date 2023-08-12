@@ -89,25 +89,6 @@ static struct vhost_vsock *vhost_vsock_get(u32 guest_cid)
 	return NULL;
 }
 
-/* Claims ownership of the skb, do not free the skb after calling! */
-static void
-vhost_transport_error(struct sk_buff *skb, int err)
-{
-	struct sock_exterr_skb *serr;
-	struct sock *sk = skb->sk;
-
-	serr = SKB_EXT_ERR(skb);
-	memset(serr, 0, sizeof(*serr));
-	serr->ee.ee_errno = err;
-	serr->ee.ee_origin = SO_EE_ORIGIN_NONE;
-
-	if (sock_queue_err_skb(sk, skb))
-		kfree_skb(skb);
-
-	sk->sk_err = err;
-	sk_error_report(sk);
-}
-
 static void
 vhost_transport_do_send_pkt(struct vhost_vsock *vsock,
 			    struct vhost_virtqueue *vq)
@@ -186,11 +167,6 @@ vhost_transport_do_send_pkt(struct vhost_vsock *vsock,
 		 * sockets and drop the packet for datagram sockets.
 		 */
 		if (payload_len > iov_len - sizeof(*hdr)) {
-			if (le16_to_cpu(hdr->type) == VIRTIO_VSOCK_TYPE_DGRAM) {
-				vhost_transport_error(skb, EHOSTUNREACH);
-				continue;
-			}
-
 			payload_len = iov_len - sizeof(*hdr);
 
 			/* As we are copying pieces of large packet's buffer to
@@ -212,7 +188,22 @@ vhost_transport_do_send_pkt(struct vhost_vsock *vsock,
 					hdr->flags &= ~cpu_to_le32(VIRTIO_VSOCK_SEQ_EOR);
 					flags_to_restore |= VIRTIO_VSOCK_SEQ_EOR;
 				}
+			} else if (le32_to_cpu(hdr->type) == VIRTIO_VSOCK_TYPE_DGRAM) {
+				hdr->flags |= cpu_to_le32(VIRTIO_VSOCK_DGRAM_MF);
+				/* Headroom grows every time we send a fragment and
+				 * call skb_pull().
+				 */
+				hdr->dgram.frag_offset =
+					cpu_to_le16(skb_headroom(skb) - sizeof(*hdr));
 			}
+		} else if (le32_to_cpu(hdr->type) == VIRTIO_VSOCK_TYPE_DGRAM) {
+			/* If this is a final fragment then both the MF must be
+			 * cleared and the frag_offset must be non-zero.
+			 */
+			if (hdr->flags & cpu_to_le32(VIRTIO_VSOCK_DGRAM_MF))
+				hdr->dgram.frag_offset =
+					cpu_to_le16(skb_headroom(skb) - sizeof(*hdr));
+			hdr->flags &= ~cpu_to_le32(VIRTIO_VSOCK_DGRAM_MF);
 		}
 
 		/* Set the correct length in the header */
@@ -966,18 +957,26 @@ static int __init vhost_vsock_init(void)
 {
 	int ret;
 
+	ret = virtio_transport_common_init();
+	if (ret)
+		return ret;
+
 	ret = vsock_core_register(&vhost_transport.transport,
 				  VSOCK_TRANSPORT_F_H2G);
 	if (ret < 0)
-		return ret;
+		goto out_common;
 
 	ret = misc_register(&vhost_vsock_misc);
-	if (ret) {
-		vsock_core_unregister(&vhost_transport.transport);
-		return ret;
-	}
+	if (ret)
+		goto out_unreg;
 
 	return 0;
+
+out_unreg:
+	vsock_core_unregister(&vhost_transport.transport);
+out_common:
+	virtio_transport_common_deinit();
+	return ret;
 };
 
 static void __exit vhost_vsock_exit(void)
