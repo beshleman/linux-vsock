@@ -945,6 +945,57 @@ static struct miscdevice vhost_vsock_misc = {
 	.fops = &vhost_vsock_fops,
 };
 
+
+
+static int vhost_vsock_netns_dev_open(struct inode *inode, struct file *file)
+{
+	return 0;
+}
+
+static int vhost_vsock_netns_dev_release(struct inode *inode, struct file *file)
+{
+	return 0;
+}
+
+static long vhost_vsock_netns_dev_ioctl(struct file *f, unsigned int ioctl,
+					unsigned long arg)
+{
+	return 0;
+}
+
+static ssize_t vhost_vsock_netns_chr_read_iter(struct kiocb *iocb, struct iov_iter *to)
+{
+	return 0;
+}
+
+static ssize_t vhost_vsock_netns_chr_write_iter(struct kiocb *iocb, struct iov_iter *to)
+{
+	return 0;
+}
+
+static __poll_t vhost_vsock_netns_chr_poll(struct file *file, poll_table *wait)
+{
+	return 0;
+}
+
+static const struct file_operations vhost_vsock_netns_fops = {
+	.owner		= THIS_MODULE,
+	.open		= vhost_vsock_netns_dev_open,
+	.release	= vhost_vsock_netns_dev_release,
+	.llseek		= noop_llseek,
+	.unlocked_ioctl	= vhost_vsock_netns_dev_ioctl,
+	.compat_ioctl	= compat_ptr_ioctl,
+	.read_iter	= vhost_vsock_netns_chr_read_iter,
+	.write_iter	= vhost_vsock_netns_chr_write_iter,
+	.poll		= vhost_vsock_netns_chr_poll,
+};
+
+static const struct miscdevice vhost_vsock_netns_misc = {
+	.minor = VHOST_VSOCK_NETNS_MINOR,
+	.name = "vhost-vsock-netns",
+	.fops = &vhost_vsock_netns_fops,
+};
+
 static int __init vhost_vsock_init(void)
 {
 	int ret;
