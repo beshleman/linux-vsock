@@ -1026,7 +1026,7 @@ static const struct file_operations vhost_vsock_netns_fops = {
 	.poll		= vhost_vsock_netns_chr_poll,
 };
 
-static const struct miscdevice vhost_vsock_netns_misc = {
+static struct miscdevice vhost_vsock_netns_misc = {
 	.minor = VHOST_VSOCK_NETNS_MINOR,
 	.name = "vhost-vsock-netns",
 	.fops = &vhost_vsock_netns_fops,
@@ -1042,17 +1042,26 @@ static int __init vhost_vsock_init(void)
 		return ret;
 
 	ret = misc_register(&vhost_vsock_misc);
-	if (ret) {
-		vsock_core_unregister(&vhost_transport.transport);
-		return ret;
-	}
+	if (ret)
+		goto unreg_vsock_core;
+
+	ret = misc_register(&vhost_vsock_netns_misc);
+	if (ret)
+		goto dereg_vhost_vsock;
 
 	return 0;
+
+dereg_vhost_vsock:
+	misc_deregister(&vhost_vsock_misc);
+unreg_vsock_core:
+	vsock_core_unregister(&vhost_transport.transport);
+	return ret;
 };
 
 static void __exit vhost_vsock_exit(void)
 {
 	misc_deregister(&vhost_vsock_misc);
+	misc_deregister(&vhost_vsock_netns_misc);
 	vsock_core_unregister(&vhost_transport.transport);
 };
 
