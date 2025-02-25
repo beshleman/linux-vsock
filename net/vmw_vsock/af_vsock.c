@@ -149,10 +149,6 @@ static const struct vsock_transport *transport_dgram;
 static const struct vsock_transport *transport_local;
 static DEFINE_MUTEX(vsock_register_mutex);
 
-static bool netns;
-module_param(netns, bool, 0644);
-MODULE_PARM_DESC(netns, "Enable network namespace support");
-
 /**** UTILS ****/
 
 /* Each bound VSocket is stored in the bind hash table and each connected
@@ -246,11 +242,11 @@ static struct sock *__vsock_find_bound_socket(struct sockaddr_vm *addr,
 
 	list_for_each_entry(vsk, vsock_bound_sockets(addr), bound_table) {
 		if (vsock_addr_equals_addr(addr, &vsk->local_addr) &&
-		    vsock_net_eq(net, sock_net(sk_vsock(vsk))))
+		    net_eq(net, sock_net(sk_vsock(vsk))))
 			return sk_vsock(vsk);
 
 		if (addr->svm_port == vsk->local_addr.svm_port &&
-		    vsock_net_eq(net, sock_net(sk_vsock(vsk))) &&
+		    net_eq(net, sock_net(sk_vsock(vsk))) &&
 		    (vsk->local_addr.svm_cid == VMADDR_CID_ANY ||
 		     addr->svm_cid == VMADDR_CID_ANY))
 			return sk_vsock(vsk);
@@ -268,7 +264,7 @@ static struct sock *__vsock_find_connected_socket(struct sockaddr_vm *src,
 	list_for_each_entry(vsk, vsock_connected_sockets(src, dst),
 			    connected_table) {
 		if (vsock_addr_equals_addr(src, &vsk->remote_addr) &&
-		    vsock_net_eq(net, sock_net(sk_vsock(vsk))) &&
+		    net_eq(net, sock_net(sk_vsock(vsk))) &&
 		    dst->svm_port == vsk->local_addr.svm_port) {
 			return sk_vsock(vsk);
 		}
@@ -555,12 +551,6 @@ bool vsock_find_cid(unsigned int cid)
 	return false;
 }
 EXPORT_SYMBOL_GPL(vsock_find_cid);
-
-bool vsock_net_eq(const struct net *net1, const struct net *net2)
-{
-	return !netns || net_eq(net1, net2);
-}
-EXPORT_SYMBOL_GPL(vsock_net_eq);
 
 struct net *vsock_default_net(void)
 {

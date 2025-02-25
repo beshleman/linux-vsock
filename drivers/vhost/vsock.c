@@ -80,7 +80,9 @@ static struct vhost_vsock *vhost_vsock_get(u32 guest_cid, struct net *net)
 			continue;
 
 		trace_printk("%s: vsock->net %p", __func__, vsock->net);
-		if (other_cid == guest_cid && (!net || vsock_net_eq(net, vsock->net)))
+
+		/* Let NULL net match any namespace. This is for all-inclusive search. */
+		if (other_cid == guest_cid && (!net || net_eq(net, vsock->net)))
 			return vsock;
 	}
 

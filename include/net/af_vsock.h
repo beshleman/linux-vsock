@@ -222,7 +222,6 @@ void vsock_for_each_connected_socket(struct vsock_transport *transport,
 				     void (*fn)(struct sock *sk));
 int vsock_assign_transport(struct vsock_sock *vsk, struct vsock_sock *psk);
 bool vsock_find_cid(unsigned int cid);
-bool vsock_net_eq(const struct net *net1, const struct net *net2);
 struct net *vsock_default_net(void);
 
 /**** TAP ****/
