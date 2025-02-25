@@ -79,6 +79,7 @@ static struct vhost_vsock *vhost_vsock_get(u32 guest_cid, struct net *net)
 		if (other_cid == 0)
 			continue;
 
+		trace_printk("%s: vsock->net %p", __func__, vsock->net);
 		if (other_cid == guest_cid && vsock_net_eq(net, vsock->net))
 			return vsock;
 
@@ -530,6 +531,7 @@ static void vhost_vsock_handle_tx_kick(struct vhost_work *work)
 		}
 
 		VIRTIO_VSOCK_SKB_CB(skb)->net = vsock->net;
+		trace_printk("%s: set skb->net to %p", __func__, vsock->net);
 		total_len += sizeof(*hdr) + skb->len;
 
 		/* Deliver to monitoring devices all received packets */
@@ -679,6 +681,8 @@ static int vhost_vsock_dev_open(struct inode *inode, struct file *file)
 		ret = PTR_ERR(vsock->net);
 		goto out_vqs;
 	}
+
+	trace_printk("%s: vsock->net %p", __func__, vsock->net);
 
 	vsock->guest_cid = 0; /* no CID assigned yet */
 	vsock->seqpacket_allow = false;

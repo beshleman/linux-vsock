@@ -1627,6 +1627,7 @@ void virtio_transport_recv_pkt(struct virtio_transport *t,
 	/* The socket must be in connected or bound table
 	 * otherwise send reset back
 	 */
+	trace_printk("%s: lookup sock with net %p", __func__, net);
 	sk = vsock_find_connected_socket(&src, &dst, net);
 	if (!sk) {
 		sk = vsock_find_bound_socket(&dst, net);
