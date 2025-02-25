@@ -235,4 +235,8 @@
  */
 #define VHOST_VDPA_GET_VRING_SIZE	_IOWR(VHOST_VIRTIO, 0x82,	\
 					      struct vhost_vring_state)
+
+/* VHOST_VSOCK_NETNS specific defines */
+#define VHOST_VSOCK_NETNS_SET	_IOW(VHOST_VIRTIO, 0x83, __u64)
+
 #endif

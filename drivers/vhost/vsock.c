@@ -80,9 +80,8 @@ static struct vhost_vsock *vhost_vsock_get(u32 guest_cid, struct net *net)
 			continue;
 
 		trace_printk("%s: vsock->net %p", __func__, vsock->net);
-		if (other_cid == guest_cid && vsock_net_eq(net, vsock->net))
+		if (other_cid == guest_cid && (!net || vsock_net_eq(net, vsock->net)))
 			return vsock;
-
 	}
 
 	return NULL;
@@ -950,7 +949,6 @@ static struct miscdevice vhost_vsock_misc = {
 };
 
 
-
 static int vhost_vsock_netns_dev_open(struct inode *inode, struct file *file)
 {
 	return 0;
@@ -964,6 +962,38 @@ static int vhost_vsock_netns_dev_release(struct inode *inode, struct file *file)
 static long vhost_vsock_netns_dev_ioctl(struct file *f, unsigned int ioctl,
 					unsigned long arg)
 {
+	void __user *argp = (void __user *)arg;
+	struct vhost_vsock_netns_req req;
+	struct vhost_vsock *vsock;
+	struct net *net;
+	int ret;
+
+	switch (ioctl) {
+	case VHOST_VSOCK_NETNS_SET:
+		if (copy_from_user(&req, argp, sizeof(req)))
+			return -EFAULT;
+
+		vsock = vhost_vsock_get(req.guest_cid, NULL);
+		if (!vsock)
+			return -EINVAL;
+
+		if (req.type != VHOST_VSOCK_NETNS_TYPE_CURRENT)
+			return -EINVAL;
+
+
+		net = get_net_ns_by_pid(current->pid);
+		if (IS_ERR(net)) {
+			ret = PTR_ERR(net);
+			return ret;
+		}
+
+		vsock->net = net;
+
+		break;
+	default:
+		return -EINVAL;
+	}
+
 	return 0;
 }
 

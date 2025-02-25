@@ -193,4 +193,14 @@ struct vhost_vdpa_iova_range {
 /* IOTLB don't flush memory mapping across device reset */
 #define VHOST_BACKEND_F_IOTLB_PERSIST  0x8
 
+/* VHOST_VSOCK_NETNS types */
+enum {
+	VHOST_VSOCK_NETNS_TYPE_CURRENT, /* Inherit the current PID's namespace */
+};
+
+struct vhost_vsock_netns_req {
+	__u64 guest_cid; /* The target guest CID */
+	int type; /* The namespace reference type */
+};
+
 #endif
