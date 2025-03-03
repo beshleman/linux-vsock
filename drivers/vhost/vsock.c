@@ -657,7 +657,7 @@ static void vhost_vsock_free(struct vhost_vsock *vsock)
 	kvfree(vsock);
 }
 
-static int vhost_vsock_dev_open(struct inode *inode, struct file *file)
+static int __vhost_vsock_dev_open(struct inode *inode, struct file *file, struct net *net)
 {
 	struct vhost_virtqueue **vqs;
 	struct vhost_vsock *vsock;
@@ -676,14 +676,7 @@ static int vhost_vsock_dev_open(struct inode *inode, struct file *file)
 		goto out_vsock;
 	}
 
-	/* Derive the network namespace from the pid opening the device */
-	vsock->net = get_net_ns_by_pid(current->pid);
-	if (IS_ERR(vsock->net)) {
-		ret = PTR_ERR(vsock->net);
-		goto out_vqs;
-	}
-
-	trace_printk("%s: vsock->net %p", __func__, vsock->net);
+	vsock->net = net;
 
 	vsock->guest_cid = 0; /* no CID assigned yet */
 	vsock->seqpacket_allow = false;
@@ -704,11 +697,25 @@ static int vhost_vsock_dev_open(struct inode *inode, struct file *file)
 	vhost_work_init(&vsock->send_pkt_work, vhost_transport_send_pkt_work);
 	return 0;
 
-out_vqs:
-	kfree(vqs);
 out_vsock:
 	vhost_vsock_free(vsock);
 	return ret;
+}
+
+static int vhost_vsock_dev_open(struct inode *inode, struct file *file)
+{
+	return __vhost_vsock_dev_open(inode, file, NULL);
+}
+
+static int vhost_vsock_netns_dev_open(struct inode *inode, struct file *file)
+{
+	struct net *net;
+
+	net = get_net_ns_by_pid(current->pid);
+	if (IS_ERR(net))
+		return PTR_ERR(net);
+
+	return __vhost_vsock_dev_open(inode, file, net);
 }
 
 static void vhost_vsock_flush(struct vhost_vsock *vsock)
@@ -950,80 +957,16 @@ static struct miscdevice vhost_vsock_misc = {
 	.fops = &vhost_vsock_fops,
 };
 
-
-static int vhost_vsock_netns_dev_open(struct inode *inode, struct file *file)
-{
-	return 0;
-}
-
-static int vhost_vsock_netns_dev_release(struct inode *inode, struct file *file)
-{
-	return 0;
-}
-
-static long vhost_vsock_netns_dev_ioctl(struct file *f, unsigned int ioctl,
-					unsigned long arg)
-{
-	void __user *argp = (void __user *)arg;
-	struct vhost_vsock_netns_req req;
-	struct vhost_vsock *vsock;
-	struct net *net;
-	int ret;
-
-	switch (ioctl) {
-	case VHOST_VSOCK_NETNS_SET:
-		if (copy_from_user(&req, argp, sizeof(req)))
-			return -EFAULT;
-
-		vsock = vhost_vsock_get(req.guest_cid, NULL);
-		if (!vsock)
-			return -EINVAL;
-
-		if (req.type != VHOST_VSOCK_NETNS_TYPE_CURRENT)
-			return -EINVAL;
-
-
-		net = get_net_ns_by_pid(current->pid);
-		if (IS_ERR(net)) {
-			ret = PTR_ERR(net);
-			return ret;
-		}
-
-		vsock->net = net;
-
-		break;
-	default:
-		return -EINVAL;
-	}
-
-	return 0;
-}
-
-static ssize_t vhost_vsock_netns_chr_read_iter(struct kiocb *iocb, struct iov_iter *to)
-{
-	return 0;
-}
-
-static ssize_t vhost_vsock_netns_chr_write_iter(struct kiocb *iocb, struct iov_iter *to)
-{
-	return 0;
-}
-
-static __poll_t vhost_vsock_netns_chr_poll(struct file *file, poll_table *wait)
-{
-	return 0;
-}
-
 static const struct file_operations vhost_vsock_netns_fops = {
-	.owner		= THIS_MODULE,
-	.open		= vhost_vsock_netns_dev_open,
-	.release	= vhost_vsock_netns_dev_release,
+	.owner          = THIS_MODULE,
+	.open           = vhost_vsock_netns_dev_open,
+	.release        = vhost_vsock_dev_release,
 	.llseek		= noop_llseek,
-	.unlocked_ioctl	= vhost_vsock_netns_dev_ioctl,
-	.compat_ioctl	= compat_ptr_ioctl,
-	.read_iter	= vhost_vsock_netns_chr_read_iter,
-	.write_iter	= vhost_vsock_netns_chr_write_iter,
-	.poll		= vhost_vsock_netns_chr_poll,
+	.unlocked_ioctl = vhost_vsock_dev_ioctl,
+	.compat_ioctl   = compat_ptr_ioctl,
+	.read_iter      = vhost_vsock_chr_read_iter,
+	.write_iter     = vhost_vsock_chr_write_iter,
+	.poll           = vhost_vsock_chr_poll,
 };
 
 static struct miscdevice vhost_vsock_netns_misc = {
