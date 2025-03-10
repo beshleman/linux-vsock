@@ -119,6 +119,8 @@ static void vsock_sk_destruct(struct sock *sk);
 static int vsock_queue_rcv_skb(struct sock *sk, struct sk_buff *skb);
 static void vsock_close(struct sock *sk, long timeout);
 
+static struct net *vsock_g2h_net;
+
 /* Protocol family. */
 struct proto vsock_proto = {
 	.name = "AF_VSOCK",
@@ -241,12 +243,14 @@ static struct sock *__vsock_find_bound_socket(struct sockaddr_vm *addr,
 	struct vsock_sock *vsk;
 
 	list_for_each_entry(vsk, vsock_bound_sockets(addr), bound_table) {
-		if (vsock_addr_equals_addr(addr, &vsk->local_addr) &&
-		    net_eq(net, sock_net(sk_vsock(vsk))))
+
+		/* If vsk->net == NULL, then */
+
+		if (vsock_addr_equals_addr(addr, &vsk->local_addr))
 			return sk_vsock(vsk);
 
 		if (addr->svm_port == vsk->local_addr.svm_port &&
-		    net_eq(net, sock_net(sk_vsock(vsk))) &&
+		    vsock_net_eq(vsk, net) &&
 		    (vsk->local_addr.svm_cid == VMADDR_CID_ANY ||
 		     addr->svm_cid == VMADDR_CID_ANY))
 			return sk_vsock(vsk);
@@ -264,7 +268,7 @@ static struct sock *__vsock_find_connected_socket(struct sockaddr_vm *src,
 	list_for_each_entry(vsk, vsock_connected_sockets(src, dst),
 			    connected_table) {
 		if (vsock_addr_equals_addr(src, &vsk->remote_addr) &&
-		    net_eq(net, sock_net(sk_vsock(vsk))) &&
+		    vsock_net_eq(vsk, net) &&
 		    dst->svm_port == vsk->local_addr.svm_port) {
 			return sk_vsock(vsk);
 		}
@@ -487,6 +491,10 @@ int vsock_assign_transport(struct vsock_sock *vsk, struct vsock_sock *psk)
 	default:
 		return -ESOCKTNOSUPPORT;
 	}
+
+	/* TODO: what about undoing the setting of vsock_g2h_net? */
+	if (vsock_g2h_net && !net_eq(sock_net(sk), vsock_g2h_net))
+		return -ENETUNREACH;
 
 	if (vsk->transport) {
 		if (vsk->transport == new_transport)
@@ -2559,6 +2567,29 @@ static const struct file_operations vsock_device_ops = {
 static struct miscdevice vsock_device = {
 	.name		= "vsock",
 	.fops		= &vsock_device_ops,
+};
+
+static int vsock_netns_dev_open(struct inode *inode, struct file *file)
+{
+	vsock_g2h_net = get_net_ns_by_pid(current->pid);
+	if (IS_ERR(vsock_g2h_net))
+		return PTR_ERR(vsock_g2h_net);
+
+	return nonseekable_open(inode, file);
+}
+
+static const struct file_operations vsock_netns_device_ops = {
+	.owner		= THIS_MODULE,
+	.unlocked_ioctl	= vsock_dev_ioctl,
+#ifdef CONFIG_COMPAT
+	.compat_ioctl	= vsock_dev_compat_ioctl,
+#endif
+	.open		= vsock_netns_dev_open,
+};
+
+static struct miscdevice vsock_netns_device = {
+	.name		= "vsock-netns",
+	.fops		= &vsock_netns_device_ops,
 };
 
 static int __init vsock_init(void)

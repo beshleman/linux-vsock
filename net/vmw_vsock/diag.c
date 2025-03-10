@@ -76,7 +76,7 @@ static int vsock_diag_dump(struct sk_buff *skb, struct netlink_callback *cb)
 			list_for_each_entry(vsk, head, bound_table) {
 				struct sock *sk = sk_vsock(vsk);
 
-				if (!net_eq(sock_net(sk), net))
+				if (net && !net_eq(sock_net(sk), net))
 					continue;
 				if (i < last_i)
 					goto next_bind;
@@ -110,7 +110,7 @@ next_bind:
 			if (__vsock_in_bound_table(vsk))
 				continue;
 
-			if (!net_eq(sock_net(sk), net))
+			if (net && !net_eq(sock_net(sk), net))
 				continue;
 			if (i < last_i)
 				goto next_connected;

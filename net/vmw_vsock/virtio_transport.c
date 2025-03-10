@@ -649,10 +649,10 @@ static void virtio_transport_rx_work(struct work_struct *work)
 			}
 
 			virtio_vsock_skb_rx_put(skb);
-			virtio_transport_deliver_tap_pkt(skb);
-			// TODO: is vsock_default_net() correct here?
-			VIRTIO_VSOCK_SKB_CB(skb)->net = vsock_default_net();
+			// TODO: replace this with the ->net set via IOCTL
+			VIRTIO_VSOCK_SKB_CB(skb)->net = NULL;
 			trace_printk("%s: net %p", __func__, VIRTIO_VSOCK_SKB_CB(skb)->net);
+			virtio_transport_deliver_tap_pkt(skb);
 			virtio_transport_recv_pkt(&virtio_transport, skb);
 		}
 	} while (!virtqueue_enable_cb(vq));

@@ -257,4 +257,9 @@ static inline bool vsock_msgzerocopy_allow(const struct vsock_transport *t)
 {
 	return t->msgzerocopy_allow && t->msgzerocopy_allow();
 }
+
+static inline bool vsock_net_eq(struct vsock_sock *vsk, struct net *net)
+{
+	return !net || net_eq(sock_net(sk_vsock(vsk)), net);
+}
 #endif /* __AF_VSOCK_H__ */
