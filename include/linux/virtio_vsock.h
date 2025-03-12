@@ -12,6 +12,7 @@
 struct virtio_vsock_skb_cb {
 	bool reply;
 	bool tap_delivered;
+	struct net *net;
 	u32 offset;
 };
 
@@ -45,6 +46,16 @@ static inline void virtio_vsock_skb_set_tap_delivered(struct sk_buff *skb)
 static inline void virtio_vsock_skb_clear_tap_delivered(struct sk_buff *skb)
 {
 	VIRTIO_VSOCK_SKB_CB(skb)->tap_delivered = false;
+}
+
+static inline struct net *virtio_vsock_skb_net(struct sk_buff *skb)
+{
+	return VIRTIO_VSOCK_SKB_CB(skb)->net;
+}
+
+static inline void virtio_vsock_skb_set_net(struct sk_buff *skb, struct net *net)
+{
+	VIRTIO_VSOCK_SKB_CB(skb)->net = net;
 }
 
 static inline void virtio_vsock_skb_rx_put(struct sk_buff *skb)
@@ -148,6 +159,7 @@ struct virtio_vsock_pkt_info {
 	u32 remote_cid, remote_port;
 	struct vsock_sock *vsk;
 	struct msghdr *msg;
+	struct net *net;
 	u32 pkt_len;
 	u16 type;
 	u16 op;
