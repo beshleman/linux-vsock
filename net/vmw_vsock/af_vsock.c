@@ -250,44 +250,81 @@ static void __vsock_remove_connected(struct vsock_sock *vsk)
 	sock_put(&vsk->sk);
 }
 
+/* Return an object if the namespaces are equal. Otherwise, return NULL. If the
+ * namespace is the vsock global namespace, then set the fallback ptr to the
+ * object.
+ *
+ * This function helps support lower precedence for the global vsock namespace.
+ * If after multiple calls no namespace match is found (all calls return NULL),
+ * the caller may use the object found in the fallback pointer, which
+ * corresponds with the global namespace.
+ *
+ * If the namespace is not the global namespace, the fallback pointer is not
+ * changed.
+ *
+ * The caller is expected to check address equality before calling.
+ */
+void *vsock_net_get_or_fallback(struct net *net, struct net *other, void **fallback, void *obj)
+{
+	if (net_eq(net, vsock_global_net()))
+		*fallback = obj;
+
+	if (net_eq(net, other))
+		return obj;
+
+	return NULL;
+}
+EXPORT_SYMBOL_GPL(vsock_net_get_or_fallback);
+
 static struct sock *__vsock_find_bound_socket(struct sockaddr_vm *addr,
 					      struct net *net)
 {
+	struct sock *fallback = NULL;
 	struct vsock_sock *vsk;
 
 	list_for_each_entry(vsk, vsock_bound_sockets(addr), bound_table) {
-		if (vsock_addr_equals_addr(addr, &vsk->local_addr)) {
-			if (net_eq(net, sock_net(sk_vsock(vsk))))
-				return sk_vsock(vsk);
-		}
+		struct sock *ret;
 
+		if (vsock_addr_equals_addr(addr, &vsk->local_addr)) {
+			ret = vsock_net_get_or_fallback(net, sock_net(sk_vsock(vsk)),
+							(void **)&fallback, sk_vsock(vsk));
+			if (ret)
+				return ret;
+		}
 		if (addr->svm_port == vsk->local_addr.svm_port &&
 		    (vsk->local_addr.svm_cid == VMADDR_CID_ANY ||
 		     addr->svm_cid == VMADDR_CID_ANY)) {
-			if (net_eq(net, sock_net(sk_vsock(vsk))))
-				return sk_vsock(vsk);
+			ret = vsock_net_get_or_fallback(net, sock_net(sk_vsock(vsk)),
+							(void **)&fallback, sk_vsock(vsk));
+			if (ret)
+				return ret;
 		}
 	}
 
-	return NULL;
+	return fallback;
 }
 
 static struct sock *__vsock_find_connected_socket(struct sockaddr_vm *src,
 						  struct sockaddr_vm *dst,
 						  struct net *net)
 {
+	struct sock *fallback = NULL;
 	struct vsock_sock *vsk;
 
 	list_for_each_entry(vsk, vsock_connected_sockets(src, dst),
 			    connected_table) {
+		struct sock *ret;
+
 		if (vsock_addr_equals_addr(src, &vsk->remote_addr) &&
 		    dst->svm_port == vsk->local_addr.svm_port) {
-			if (net_eq(net, sock_net(sk_vsock(vsk))))
-				return sk_vsock(vsk);
+			ret = vsock_net_get_or_fallback(net, sock_net(sk_vsock(vsk)),
+							(void **)&fallback, sk_vsock(vsk));
+			if (ret)
+				return ret;
 		}
 	}
 
-	return NULL;
+	return fallback;
 }
 
 static void vsock_insert_unbound(struct vsock_sock *vsk)

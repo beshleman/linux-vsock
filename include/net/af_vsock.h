@@ -261,4 +261,6 @@ static inline struct net *vsock_global_net(void)
 {
 	return NULL;
 }
+
+void *vsock_net_get_or_fallback(struct net *n1, struct net *n2, void **fallback, void *obj);
 #endif /* __AF_VSOCK_H__ */
