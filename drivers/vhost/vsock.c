@@ -46,6 +46,8 @@ static DEFINE_READ_MOSTLY_HASHTABLE(vhost_vsock_hash, 8);
 struct vhost_vsock {
 	struct vhost_dev dev;
 	struct vhost_virtqueue vqs[2];
+	struct net *net;
+	netns_tracker ns_tracker;
 
 	/* Link to global vhost_vsock_hash, writes use vhost_vsock_mutex */
 	struct hlist_node hash;
@@ -59,6 +61,22 @@ struct vhost_vsock {
 	bool seqpacket_allow;
 };
 
+static void vhost_vsock_net_set(struct vhost_vsock *vsock, struct net *net)
+{
+	if (net_eq(net, vsock_global_net()))
+		vsock->net = vsock_global_net();
+	else
+		vsock->net = get_net_track(net, &vsock->ns_tracker, GFP_KERNEL);
+}
+
+static void vhost_vsock_net_put(struct vhost_vsock *vsock)
+{
+	if (net_eq(vsock->net, vsock_global_net()))
+		return;
+
+	put_net_track(vsock->net, &vsock->ns_tracker);
+}
+
 static u32 vhost_transport_get_local_cid(void)
 {
 	return VHOST_VSOCK_DEFAULT_HOST_CID;
@@ -67,21 +85,28 @@ static u32 vhost_transport_get_local_cid(void)
 /* Callers that dereference the return value must hold vhost_vsock_mutex or the
  * RCU read lock.
  */
-static struct vhost_vsock *vhost_vsock_get(u32 guest_cid)
+static struct vhost_vsock *vhost_vsock_get(u32 guest_cid, struct net *net, bool global_fallback)
 {
+	struct vhost_vsock *fallback = NULL;
 	struct vhost_vsock *vsock;
 
 	hash_for_each_possible_rcu(vhost_vsock_hash, vsock, hash, guest_cid) {
 		u32 other_cid = vsock->guest_cid;
+		struct vhost_vsock *ret;
 
 		/* Skip instances that have no CID yet */
 		if (other_cid == 0)
 			continue;
 
-		if (other_cid == guest_cid)
-			return vsock;
-
+		if (other_cid == guest_cid) {
+			ret = vsock_net_get_or_fallback(vsock->net, net, (void **)&fallback, vsock);
+			if (ret)
+				return ret;
+		}
 	}
+
+	if (global_fallback)
+		return fallback;
 
 	return NULL;
 }
@@ -272,13 +297,14 @@ static int
 vhost_transport_send_pkt(struct sk_buff *skb)
 {
 	struct virtio_vsock_hdr *hdr = virtio_vsock_hdr(skb);
+	struct net *net = virtio_vsock_skb_net(skb);
 	struct vhost_vsock *vsock;
 	int len = skb->len;
 
 	rcu_read_lock();
 
 	/* Find the vhost_vsock according to guest context id  */
-	vsock = vhost_vsock_get(le64_to_cpu(hdr->dst_cid));
+	vsock = vhost_vsock_get(le64_to_cpu(hdr->dst_cid), net, true);
 	if (!vsock) {
 		rcu_read_unlock();
 		kfree_skb(skb);
@@ -305,7 +331,8 @@ vhost_transport_cancel_pkt(struct vsock_sock *vsk)
 	rcu_read_lock();
 
 	/* Find the vhost_vsock according to guest context id  */
-	vsock = vhost_vsock_get(vsk->remote_addr.svm_cid);
+	vsock = vhost_vsock_get(vsk->remote_addr.svm_cid,
+				sock_net(sk_vsock(vsk)), true);
 	if (!vsock)
 		goto out;
 
@@ -461,11 +488,12 @@ static struct virtio_transport vhost_transport = {
 
 static bool vhost_transport_seqpacket_allow(struct vsock_sock *vsk, u32 remote_cid)
 {
+	struct net *net = sock_net(sk_vsock(vsk));
 	struct vhost_vsock *vsock;
 	bool seqpacket_allow = false;
 
 	rcu_read_lock();
-	vsock = vhost_vsock_get(remote_cid);
+	vsock = vhost_vsock_get(remote_cid, net, true);
 
 	if (vsock)
 		seqpacket_allow = vsock->seqpacket_allow;
@@ -525,7 +553,7 @@ static void vhost_vsock_handle_tx_kick(struct vhost_work *work)
 			continue;
 		}
 
-		virtio_vsock_skb_set_net(skb, vsock_global_net());
+		virtio_vsock_skb_set_net(skb, vsock->net);
 		total_len += sizeof(*hdr) + skb->len;
 
 		/* Deliver to monitoring devices all received packets */
@@ -650,7 +678,7 @@ static void vhost_vsock_free(struct vhost_vsock *vsock)
 	kvfree(vsock);
 }
 
-static int vhost_vsock_dev_open(struct inode *inode, struct file *file)
+static int __vhost_vsock_dev_open(struct inode *inode, struct file *file, struct net *net)
 {
 	struct vhost_virtqueue **vqs;
 	struct vhost_vsock *vsock;
@@ -669,6 +697,7 @@ static int vhost_vsock_dev_open(struct inode *inode, struct file *file)
 		goto out;
 	}
 
+	vhost_vsock_net_set(vsock, net);
 	vsock->guest_cid = 0; /* no CID assigned yet */
 	vsock->seqpacket_allow = false;
 
@@ -693,6 +722,22 @@ out:
 	return ret;
 }
 
+static int vhost_vsock_dev_open(struct inode *inode, struct file *file)
+{
+	return __vhost_vsock_dev_open(inode, file, vsock_global_net());
+}
+
+static int vhost_vsock_netns_dev_open(struct inode *inode, struct file *file)
+{
+	struct net *net;
+
+	net = get_net_ns_by_pid(current->pid);
+	if (IS_ERR(net))
+		return PTR_ERR(net);
+
+	return __vhost_vsock_dev_open(inode, file, net);
+}
+
 static void vhost_vsock_flush(struct vhost_vsock *vsock)
 {
 	vhost_dev_flush(&vsock->dev);
@@ -708,7 +753,7 @@ static void vhost_vsock_reset_orphans(struct sock *sk)
 	 */
 
 	/* If the peer is still valid, no need to reset connection */
-	if (vhost_vsock_get(vsk->remote_addr.svm_cid))
+	if (vhost_vsock_get(vsk->remote_addr.svm_cid, sock_net(sk), true))
 		return;
 
 	/* If the close timeout is pending, let it expire.  This avoids races
@@ -753,6 +798,7 @@ static int vhost_vsock_dev_release(struct inode *inode, struct file *file)
 	virtio_vsock_skb_queue_purge(&vsock->send_pkt_queue);
 
 	vhost_dev_cleanup(&vsock->dev);
+	vhost_vsock_net_put(vsock);
 	kfree(vsock->dev.vqs);
 	vhost_vsock_free(vsock);
 	return 0;
@@ -777,9 +823,18 @@ static int vhost_vsock_set_cid(struct vhost_vsock *vsock, u64 guest_cid)
 	if (vsock_find_cid(guest_cid))
 		return -EADDRINUSE;
 
+	/*
+	 * If this namespace has already connected to a vsock with the same CID
+	 * being requested, we must reject the request. This can arise when
+	 * creating a new vsock in a local namespace that has already
+	 * connected to a same-CID vsock in the global namespace.
+	 */
+	if (vsock_net_has_connected(vsock->net, guest_cid))
+		return -EADDRINUSE;
+
 	/* Refuse if CID is already in use */
 	mutex_lock(&vhost_vsock_mutex);
-	other = vhost_vsock_get(guest_cid);
+	other = vhost_vsock_get(guest_cid, vsock->net, false);
 	if (other && other != vsock) {
 		mutex_unlock(&vhost_vsock_mutex);
 		return -EADDRINUSE;
@@ -931,6 +986,24 @@ static struct miscdevice vhost_vsock_misc = {
 	.fops = &vhost_vsock_fops,
 };
 
+static const struct file_operations vhost_vsock_netns_fops = {
+	.owner          = THIS_MODULE,
+	.open           = vhost_vsock_netns_dev_open,
+	.release        = vhost_vsock_dev_release,
+	.llseek		= noop_llseek,
+	.unlocked_ioctl = vhost_vsock_dev_ioctl,
+	.compat_ioctl   = compat_ptr_ioctl,
+	.read_iter      = vhost_vsock_chr_read_iter,
+	.write_iter     = vhost_vsock_chr_write_iter,
+	.poll           = vhost_vsock_chr_poll,
+};
+
+static struct miscdevice vhost_vsock_netns_misc = {
+	.minor = VHOST_VSOCK_NETNS_MINOR,
+	.name = "vhost-vsock-netns",
+	.fops = &vhost_vsock_netns_fops,
+};
+
 static int __init vhost_vsock_init(void)
 {
 	int ret;
@@ -941,16 +1014,25 @@ static int __init vhost_vsock_init(void)
 		return ret;
 
 	ret = misc_register(&vhost_vsock_misc);
-	if (ret) {
-		vsock_core_unregister(&vhost_transport.transport);
-		return ret;
-	}
+	if (ret)
+		goto out_core;
+
+	ret = misc_register(&vhost_vsock_netns_misc);
+	if (ret)
+		goto out_misc;
 
 	return 0;
+
+out_misc:
+	misc_deregister(&vhost_vsock_misc);
+out_core:
+	vsock_core_unregister(&vhost_transport.transport);
+	return ret;
 };
 
 static void __exit vhost_vsock_exit(void)
 {
+	misc_deregister(&vhost_vsock_netns_misc);
 	misc_deregister(&vhost_vsock_misc);
 	vsock_core_unregister(&vhost_transport.transport);
 };
