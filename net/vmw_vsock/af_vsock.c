@@ -97,14 +97,22 @@
  *      - AF_VSOCK sockets may reach any CID allocated from the public pool
  *      - AF_VSOCK sockets may not reach CIDs allocated from private pools
  *
- *    - mixed - aka partially shared
- *      - CID allocation draws only from the private pool, does not affect the public pool
- *      - AF_VSOCK sockets may reach CIDs allocated from either the private or public pool
- *
  *   - local - aka fully private
  *     - CID allocation draws only from the private pool, does not affect public pool
  *     - AF_VSOCK sockets may only reach CIDs from the private pool
  *     - AF_VSOCK sockets may not reach CIDs allocated from outside the pool
+ *
+ *    - mixed - aka partially shared
+ *      - CID allocation draws only from the private pool, does not affect the public
+ *        pool
+ *      - AF_VSOCK sockets may reach CIDs allocated from either the private or public
+ *        pool
+ *      - For use by namespace managers that may want to retain control over
+ *        CID allocation, but allow vsock services inside another namespace.  The
+ *        manager gives the service namespace adopts "mixed" mode so that its CID
+ *        allocation can't affect the manager's namespace.
+ *      - When a locally allocated CID and globally allocated CID are equal, only
+ *        the local is visible from inside the namespace.
  */
 
 #include <linux/compat.h>
