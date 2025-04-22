@@ -262,6 +262,16 @@ static inline struct net *vsock_global_net(void)
 	return NULL;
 }
 
+static inline u8 vsock_net_mode(struct net *net)
+{
+	u8 ret;
+
+	spin_lock_bh(&net->vsock.lock);
+	ret = net->vsock.ns_mode;
+	spin_unlock_bh(&net->vsock.lock);
+	return ret;
+}
+
 void *vsock_net_get_or_fallback(struct net *n1, struct net *n2, void **fallback, void *obj);
 bool vsock_net_has_connected(struct net *net, u64 guest_cid);
 #endif /* __AF_VSOCK_H__ */
