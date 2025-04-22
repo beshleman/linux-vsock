@@ -315,7 +315,7 @@ vhost_transport_send_pkt(struct sk_buff *skb)
 	rcu_read_lock();
 
 	/* Find the vhost_vsock according to guest context id  */
-	vsock = vhost_vsock_get(le64_to_cpu(hdr->dst_cid), net, true);
+	vsock = vhost_vsock_get(le64_to_cpu(hdr->dst_cid), net, false);
 	if (!vsock) {
 		rcu_read_unlock();
 		kfree_skb(skb);
@@ -343,7 +343,7 @@ vhost_transport_cancel_pkt(struct vsock_sock *vsk)
 
 	/* Find the vhost_vsock according to guest context id  */
 	vsock = vhost_vsock_get(vsk->remote_addr.svm_cid,
-				sock_net(sk_vsock(vsk)), true);
+				sock_net(sk_vsock(vsk)), false);
 	if (!vsock)
 		goto out;
 
@@ -504,7 +504,7 @@ static bool vhost_transport_seqpacket_allow(struct vsock_sock *vsk, u32 remote_c
 	bool seqpacket_allow = false;
 
 	rcu_read_lock();
-	vsock = vhost_vsock_get(remote_cid, net, true);
+	vsock = vhost_vsock_get(remote_cid, net, false);
 
 	if (vsock)
 		seqpacket_allow = vsock->seqpacket_allow;
@@ -764,7 +764,7 @@ static void vhost_vsock_reset_orphans(struct sock *sk)
 	 */
 
 	/* If the peer is still valid, no need to reset connection */
-	if (vhost_vsock_get(vsk->remote_addr.svm_cid, sock_net(sk), true))
+	if (vhost_vsock_get(vsk->remote_addr.svm_cid, sock_net(sk), false))
 		return;
 
 	/* If the close timeout is pending, let it expire.  This avoids races
@@ -845,7 +845,7 @@ static int vhost_vsock_set_cid(struct vhost_vsock *vsock, u64 guest_cid)
 
 	/* Refuse if CID is already in use */
 	mutex_lock(&vhost_vsock_mutex);
-	other = vhost_vsock_get(guest_cid, vsock->net, false);
+	other = vhost_vsock_get(guest_cid, vsock->net, true);
 	if (other && other != vsock) {
 		mutex_unlock(&vhost_vsock_mutex);
 		return -EADDRINUSE;
