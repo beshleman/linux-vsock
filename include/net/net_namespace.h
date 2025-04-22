@@ -197,7 +197,7 @@ struct net {
 	/* Move to a better place when the config guard is removed. */
 	struct mutex		rtnl_mutex;
 #endif
-#ifdef CONFIG_VSOCKETS
+#if IS_ENABLED(CONFIG_VSOCKETS)
 	struct netns_vsock	vsock;
 #endif
 } __randomize_layout;
