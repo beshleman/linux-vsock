@@ -84,20 +84,27 @@
  *   TCP_CLOSING - disconnecting
  *   TCP_LISTEN - listening
  *
- * - Network namespaces in vsock are supported, but are different from other
- * socket types. There exists a global vsock namespace and local vsock
- * namespace.
+ * - Namespaces in vsock support three different modes configured
+ *   through /proc/net/vsock_ns_mode. The modes are "local", "global",
+ *   and "mixed". Each mode defines how the namespace interacts with CIDs.
+ *   /proc/net/vsock_ns_mode is write-once, so that it may be configured
+ *   by a namespace manager. The default is "global". The mode is set
+ *   per-namespace.
  *
- * Any namespace may access any vsock in the global vsock namespace. The global
- * namespace preserves the same old reachability rules of vsock. If a vsock is
- * created in a non-global (local) namespace, however, then only processes in
- * that namespace may reach it. This allows for namespace isolation. If there
- * exist vsocks with equal CIDs in both the local namespace of a process and in
- * the global namespace, then the vsock in the process's namespace will take
- * precedence and the global one will not be accessible.
+ *   The modes affect the allocation and accessibility of CIDs as follows:
+ *   - global - aka fully public
+ *      - CID allocation draws from the public pool
+ *      - AF_VSOCK sockets may reach any CID allocated from the public pool
+ *      - AF_VSOCK sockets may not reach CIDs allocated from private pools
  *
- * Transports responsible for CID allocation (e.g., vhost-vsock) must manage
- * whether a new CID belongs to the global or local namespace.
+ *    - mixed - aka partially shared
+ *      - CID allocation draws only from the private pool, does not affect the public pool
+ *      - AF_VSOCK sockets may reach CIDs allocated from either the private or public pool
+ *
+ *   - local - aka fully private
+ *     - CID allocation draws only from the private pool, does not affect public pool
+ *     - AF_VSOCK sockets may only reach CIDs from the private pool
+ *     - AF_VSOCK sockets may not reach CIDs allocated from outside the pool
  */
 
 #include <linux/compat.h>
