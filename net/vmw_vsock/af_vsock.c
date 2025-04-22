@@ -2663,6 +2663,136 @@ static struct miscdevice vsock_device = {
 	.fops		= &vsock_device_ops,
 };
 
+#define VSOCK_NS_MODE_NAME_MAX 8
+
+static struct ctl_table vsock_table[] = {
+	{
+		.procname	= "vsock_ns_mode",
+		.data		= &init_net.vsock.ns_mode,
+		.maxlen		= sizeof(u8),
+		.mode		= 0644,
+		.proc_handler	= proc_dostring
+	},
+};
+
+static int __net_init vsock_sysctl_register(struct net *net)
+{
+	struct ctl_table *table;
+
+	if (net_eq(net, &init_net)) {
+		table = vsock_table;
+	} else {
+		table = kmemdup(vsock_table, sizeof(vsock_table), GFP_KERNEL);
+		if (!table)
+			goto err_alloc;
+
+		table[0].data = &net->vsock.ns_mode;
+	}
+
+	net->vsock.vsock_hdr = register_net_sysctl_sz(net, "net/vsock", table,
+						      ARRAY_SIZE(vsock_table));
+	if (!net->vsock.vsock_hdr)
+		goto err_reg;
+
+	return 0;
+
+err_reg:
+	if (!net_eq(net, &init_net))
+		kfree(table);
+err_alloc:
+	return -ENOMEM;
+}
+
+static void vsock_sysctl_unregister(struct net *net)
+{
+	const struct ctl_table *table;
+
+	table = net->vsock.vsock_hdr->ctl_table_arg;
+	unregister_net_sysctl_table(net->vsock.vsock_hdr);
+	if (!net_eq(net, &init_net))
+		kfree(table);
+}
+
+#ifdef CONFIG_PROC_FS
+static int vsock_proc_ns_mode_show(struct seq_file *seq, void *v)
+{
+	struct net *net = seq_file_single_net(seq);
+	const char *p = "invalid";
+
+	spin_lock_bh(&net->vsock.lock);
+	if (net->vsock.ns_mode & VSOCK_NS_MODE_GLOBAL)
+		p = "global";
+	else if (net->vsock.ns_mode & VSOCK_NS_MODE_LOCAL)
+		p = "local";
+	else if (net->vsock.ns_mode & VSOCK_NS_MODE_MIXED)
+		p = "mixed";
+	else
+		WARN_ONCE(1, "invalid vsock_ns_mode");
+	spin_unlock_bh(&net->vsock.lock);
+	seq_printf(seq, "%s", p);
+	return 0;
+}
+
+static int vsock_proc_ns_mode_write(struct file *file, char *buf, size_t size)
+{
+	struct seq_file *m = file->private_data;
+	struct net *net = seq_file_single_net(m);
+	size_t len = size - 1;
+	int ret = 0;
+	u8 mode;
+
+	if (!vsock_net_mode_can_set(net))
+		return -EPERM;
+
+	mode = 0;
+	if (!strncmp(buf, "global", len))
+		mode |= VSOCK_NS_MODE_GLOBAL;
+	else if (!strncmp(buf, "local", len))
+		mode |= VSOCK_NS_MODE_LOCAL;
+	else if (!strncmp(buf, "mixed", len))
+		mode |= VSOCK_NS_MODE_MIXED;
+	else
+		return -EINVAL;
+
+	vsock_net_set_mode(net, mode);
+
+	return ret;
+}
+#endif /* CONFIG_PROC_FS */
+
+static __net_init int vsock_sysctl_init_net(struct net *net)
+{
+	spin_lock_init(&net->vsock.lock);
+	net->vsock.ns_mode = VSOCK_NS_MODE_GLOBAL;
+	if (vsock_sysctl_register(net))
+		goto out;
+
+#ifdef CONFIG_PROC_FS
+	if (!proc_create_net_single_write("vsock_ns_mode", 0644, net->proc_net,
+					  vsock_proc_ns_mode_show,
+					  vsock_proc_ns_mode_write,
+					  NULL))
+		goto err_sysctl;
+#endif
+
+	return 0;
+
+err_sysctl:
+	vsock_sysctl_unregister(net);
+out:
+	return -ENOMEM;
+}
+
+static __net_exit void vsock_sysctl_exit_net(struct net *net)
+{
+	vsock_sysctl_unregister(net);
+}
+
+static struct pernet_operations vsock_sysctl_ops __net_initdata = {
+	.init = vsock_sysctl_init_net,
+	.exit = vsock_sysctl_exit_net,
+};
+
 static int __init vsock_init(void)
 {
 	int err = 0;
@@ -2690,10 +2820,17 @@ static int __init vsock_init(void)
 		goto err_unregister_proto;
 	}
 
+	if (register_pernet_subsys(&vsock_sysctl_ops)) {
+		err = -ENOMEM;
+		goto err_unregister_sock;
+	}
+
 	vsock_bpf_build_proto();
 
 	return 0;
 
+err_unregister_sock:
+	sock_unregister(AF_VSOCK);
 err_unregister_proto:
 	proto_unregister(&vsock_proto);
 err_deregister_misc:
