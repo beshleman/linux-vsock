@@ -10,6 +10,7 @@
 
 #include <linux/kernel.h>
 #include <linux/workqueue.h>
+#include <net/netns/vsock.h>
 #include <net/sock.h>
 #include <uapi/linux/vm_sockets.h>
 
@@ -275,7 +276,7 @@ static inline u8 vsock_net_mode(struct net *net)
 static inline void vsock_net_set_mode(struct net *net, u8 mode)
 {
 	spin_lock_bh(&net->vsock.lock);
-	ret = net->vsock.ns_mode | VSOCK_NS_MODE_WRITTEN;
+	net->vsock.ns_mode = mode | VSOCK_NS_MODE_WRITTEN_ONCE;
 	spin_unlock_bh(&net->vsock.lock);
 }
 
@@ -285,7 +286,7 @@ static inline bool vsock_net_mode_can_set(struct net *net)
 	bool ret;
 
 	spin_lock_bh(&net->vsock.lock);
-	ret = !(net->vsock.ns_mode & VSOCK_NS_MODE_WRITTEN);
+	ret = !(net->vsock.ns_mode & VSOCK_NS_MODE_WRITTEN_ONCE);
 	spin_unlock_bh(&net->vsock.lock);
 	return ret;
 }
