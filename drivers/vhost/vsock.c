@@ -85,28 +85,39 @@ static u32 vhost_transport_get_local_cid(void)
 /* Callers that dereference the return value must hold vhost_vsock_mutex or the
  * RCU read lock.
  */
-static struct vhost_vsock *vhost_vsock_get(u32 guest_cid, struct net *net, bool global_fallback)
+static struct vhost_vsock *vhost_vsock_get(u32 guest_cid, struct net *net, bool alloc)
 {
 	struct vhost_vsock *fallback = NULL;
 	struct vhost_vsock *vsock;
+	u8 mode;
 
+
+	mode = vsock_net_mode(net);
 	hash_for_each_possible_rcu(vhost_vsock_hash, vsock, hash, guest_cid) {
 		u32 other_cid = vsock->guest_cid;
 		struct vhost_vsock *ret;
+		u8 mode;
 
 		/* Skip instances that have no CID yet */
 		if (other_cid == 0)
 			continue;
 
-		if (other_cid == guest_cid) {
-			ret = vsock_net_get_or_fallback(vsock->net, net, (void **)&fallback, vsock);
-			if (ret)
-				return ret;
-		}
-	}
+		/* local mode searches always require same net */
+		if ((mode & VSOCK_NS_MODE_LOCAL) && !net_eq(net, vsock->net))
+			continue;
 
-	if (global_fallback)
-		return fallback;
+		/* mixed mode only allows allocations from the private pool */
+		if (alloc &&
+		    (mode & VSOCK_NS_MODE_MIXED) &&
+		    !net_eq(net, vsock->net))
+			continue;
+
+		ret = vsock_net_get_or_fallback(net, vsock->net,
+						(void **)fallback,
+						vsock);
+		if (other_cid == guest_cid)
+			return ret;
+	}
 
 	return NULL;
 }
