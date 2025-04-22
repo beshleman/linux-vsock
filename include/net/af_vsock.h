@@ -272,6 +272,24 @@ static inline u8 vsock_net_mode(struct net *net)
 	return ret;
 }
 
+static inline void vsock_net_set_mode(struct net *net, u8 mode)
+{
+	spin_lock_bh(&net->vsock.lock);
+	ret = net->vsock.ns_mode | VSOCK_NS_MODE_WRITTEN;
+	spin_unlock_bh(&net->vsock.lock);
+}
+
+/* Return true if mode has already been written once. Otherwise, return false. */
+static inline bool vsock_net_mode_can_set(struct net *net)
+{
+	bool ret;
+
+	spin_lock_bh(&net->vsock.lock);
+	ret = !(net->vsock.ns_mode & VSOCK_NS_MODE_WRITTEN);
+	spin_unlock_bh(&net->vsock.lock);
+	return ret;
+}
+
 void *vsock_net_get_or_fallback(struct net *n1, struct net *n2, void **fallback, void *obj);
 bool vsock_net_has_connected(struct net *net, u64 guest_cid);
 #endif /* __AF_VSOCK_H__ */
