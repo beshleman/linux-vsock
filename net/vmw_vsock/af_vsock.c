@@ -281,7 +281,9 @@ static void __vsock_remove_connected(struct vsock_sock *vsk)
  */
 void *vsock_net_get_or_fallback(struct net *net, struct net *other, void **fallback, void *obj)
 {
-	if (net_eq(net, vsock_global_net()))
+	if (!net_eq(net, other) &&
+	    (vsock_net_mode(net) & VSOCK_NS_MODE_MIXED) &&
+	    (vsock_net_mode(other) & VSOCK_NS_MODE_GLOBAL))
 		*fallback = obj;
 
 	if (net_eq(net, other))
