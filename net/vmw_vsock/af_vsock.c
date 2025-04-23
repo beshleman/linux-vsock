@@ -181,6 +181,9 @@ static const struct vsock_transport *transport_dgram;
 static const struct vsock_transport *transport_local;
 static DEFINE_MUTEX(vsock_register_mutex);
 
+struct net __vsock_global_net;
+EXPORT_SYMBOL_GPL(__vsock_global_net);
+
 /**** UTILS ****/
 
 /* Each bound VSocket is stored in the bind hash table and each connected
@@ -2760,10 +2763,15 @@ static int vsock_proc_ns_mode_write(struct file *file, char *buf, size_t size)
 }
 #endif /* CONFIG_PROC_FS */
 
-static __net_init int vsock_sysctl_init_net(struct net *net)
+static void vsock_net_init(struct net *net)
 {
 	spin_lock_init(&net->vsock.lock);
 	net->vsock.ns_mode = VSOCK_NS_MODE_GLOBAL;
+}
+
+static __net_init int vsock_sysctl_init_net(struct net *net)
+{
+	vsock_net_init(net);
 	if (vsock_sysctl_register(net))
 		goto out;
 
@@ -2825,6 +2833,7 @@ static int __init vsock_init(void)
 		goto err_unregister_sock;
 	}
 
+	vsock_net_init(vsock_global_net());
 	vsock_bpf_build_proto();
 
 	return 0;

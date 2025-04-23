@@ -258,9 +258,11 @@ static inline bool vsock_msgzerocopy_allow(const struct vsock_transport *t)
 	return t->msgzerocopy_allow && t->msgzerocopy_allow();
 }
 
+extern struct net __vsock_global_net;
+
 static inline struct net *vsock_global_net(void)
 {
-	return NULL;
+	return &__vsock_global_net;
 }
 
 static inline u8 vsock_net_mode(struct net *net)
