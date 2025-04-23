@@ -85,6 +85,7 @@ build() {
 
 	pushd ${KERNEL_CHECKOUT} >/dev/null
 	vng \
+		--qemu ${QEMU} \
 		--kconfig \
 		--config ${KERNEL_CHECKOUT}/tools/testing/selftests/vsock/config.vsock
 	make -j$(nproc)
@@ -100,6 +101,7 @@ vm_setup() {
 	fi
 	vng \
 		$VNG_OPTS	\
+		--qemu ${QEMU} \
 		--run ${KERNEL_CHECKOUT} \
 		--qemu-opts="${QEMU_OPTS}" \
 		--user root \
