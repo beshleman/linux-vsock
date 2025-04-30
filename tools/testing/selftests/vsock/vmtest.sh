@@ -103,7 +103,7 @@ vm_setup() {
 		--qemu="${QEMU}" \
 		--user root \
 		--append "${KERNEL_CMDLINE}" \
-		--rw  2>&1 >/dev/null &
+		--rw  &>/dev/null &
 }
 
 vm_wait_for_ssh() {
