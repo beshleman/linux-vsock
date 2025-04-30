@@ -248,6 +248,7 @@ run_test() {
 
 	name=$(echo "${1}" | awk '{ print $1 }')
 	eval test_"${name}"
+	rc=$?
 
 	host_oops_cnt_after=$(dmesg | grep -i 'Oops' | wc -l)
 	if [[ ${host_oops_cnt_after} > ${host_oops_cnt_before} ]]; then
