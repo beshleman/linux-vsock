@@ -31,12 +31,14 @@ QEMU_PIDFILE=/tmp/qemu.pid
 # virtme-init mistakenly sets identical IPs to the ssh device and additional
 # devices, we instead opt out of using --ssh, add the device manually, and also
 # add the kernel cmdline options that virtme-init uses to setup the interface.
-QEMU_OPTS=""
-QEMU_OPTS="${QEMU_OPTS} -netdev user,id=n0,hostfwd=tcp::${TEST_HOST_PORT}-:${TEST_GUEST_PORT}"
-QEMU_OPTS="${QEMU_OPTS},hostfwd=tcp::${SSH_HOST_PORT}-:${SSH_GUEST_PORT}"
-QEMU_OPTS="${QEMU_OPTS} -device virtio-net-pci,netdev=n0"
-QEMU_OPTS="${QEMU_OPTS} -device vhost-vsock-pci,guest-cid=${VSOCK_CID}"
-QEMU_OPTS="${QEMU_OPTS} --pidfile ${QEMU_PIDFILE}"
+QEMU_TEST_PORT_FWD="hostfwd=tcp::${TEST_HOST_PORT}-:${TEST_GUEST_PORT}"
+QEMU_SSH_PORT_FWD="hostfwd=tcp::${SSH_HOST_PORT}-:${SSH_GUEST_PORT}"
+QEMU_OPTS="\
+	 -netdev user,id=n0,${QEMU_TEST_PORT_FWD},${QEMU_SSH_PORT_FWD} \
+	 -device virtio-net-pci,netdev=n0 \
+	 -device vhost-vsock-pci,guest-cid=${VSOCK_CID} \
+	 --pidfile ${QEMU_PIDFILE} \
+"
 KERNEL_CMDLINE="virtme.dhcp net.ifnames=0 biosdevname=0 virtme.ssh virtme_ssh_user=$USER"
 
 LOG=${SCRIPT_DIR}/vmtest.log
