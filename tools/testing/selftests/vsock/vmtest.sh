@@ -87,6 +87,12 @@ check_deps() {
 			exit ${KSFT_SKIP}
 		fi
 	done
+
+	if [[ ! -x $(command -v ${VSOCK_TEST}) ]]; then
+		printf "skip:    ${VSOCK_TEST} not found!"
+		printf " Please build the kselftest vsock target.\n"
+		exit ${KSFT_SKIP}
+	fi
 }
 
 vm_setup() {
