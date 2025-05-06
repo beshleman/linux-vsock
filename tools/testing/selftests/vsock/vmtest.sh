@@ -77,7 +77,7 @@ vm_ssh() {
 
 cleanup() {
 	if [[ -f "${QEMU_PIDFILE}" ]]; then
-		pkill -SIGTERM -F ${QEMU_PIDFILE} 2>&1 >/dev/null
+		pkill -SIGTERM -F ${QEMU_PIDFILE} 2>&1 > /dev/null
 	fi
 }
 
@@ -102,7 +102,7 @@ vm_setup() {
 		--qemu="${QEMU}" \
 		--user root \
 		--append "${KERNEL_CMDLINE}" \
-		--rw  &>/dev/null &
+		--rw  &> /dev/null &
 
 	timeout ${WAIT_TOTAL} \
 		bash -c 'while [[ ! -e '"${QEMU_PIDFILE}"' ]]; do sleep 1; done; exit 0'
