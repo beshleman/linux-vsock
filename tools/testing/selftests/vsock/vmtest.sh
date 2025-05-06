@@ -8,6 +8,8 @@
 #		* busybox-static (used by virtme-ng)
 #		* qemu	(used by virtme-ng)
 
+KSFT_PASS=0
+KSFT_FAIL=1
 KSFT_SKIP=4
 SCRIPT_DIR="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 KERNEL_CHECKOUT=$(realpath ${SCRIPT_DIR}/../../../..)
@@ -64,7 +66,7 @@ usage() {
 
 die() {
 	echo "$*" >&2
-	exit 1
+	exit ${KSFT_FAIL}
 }
 
 vm_ssh() {
@@ -335,8 +337,10 @@ done
 
 if [[ ${cnt} -eq 0 ]]; then
 	echo OK
+	rc="${KSFT_PASS}"
 else
 	echo FAILED: ${cnt}
+	rc="${KSFT_FAIL}"
 fi
 echo "Log: ${LOG}"
-exit ${cnt}
+exit ${rc}
