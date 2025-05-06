@@ -8,11 +8,11 @@
 #		* busybox-static (used by virtme-ng)
 #		* qemu	(used by virtme-ng)
 
+VERBOSE=0
 KSFT_PASS=0
 KSFT_FAIL=1
 KSFT_SKIP=4
 SCRIPT_DIR="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-VERBOSE=0
 VSOCK_TEST=${SCRIPT_DIR}/vsock_test
 
 TEST_GUEST_PORT=51000
