@@ -11,7 +11,6 @@
 SCRIPT_DIR="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 KERNEL_CHECKOUT=$(realpath ${SCRIPT_DIR}/../../../..)
 VERBOSE=0
-SKIP_BUILD=0
 VSOCK_TEST=${KERNEL_CHECKOUT}/tools/testing/vsock/vsock_test
 
 TEST_GUEST_PORT=51000
@@ -55,7 +54,6 @@ usage() {
 	echo
 	echo "Options"
 	echo "  -v: verbose output"
-	echo "  -s: skip build"
 	echo
 	echo "Available tests${avail_tests}"
 	exit 1
@@ -75,19 +73,6 @@ cleanup() {
 	if [[ -f "${QEMU_PIDFILE}" ]]; then
 		pkill -SIGTERM -F ${QEMU_PIDFILE} 2>&1 >/dev/null
 	fi
-}
-
-build() {
-	log_setup "Building kernel and tests"
-
-	pushd ${KERNEL_CHECKOUT} >/dev/null
-	vng \
-		--kconfig \
-		--config ${KERNEL_CHECKOUT}/tools/testing/selftests/vsock/config.vsock
-	make -j$(nproc)
-	make -C ${KERNEL_CHECKOUT}/tools/testing/vsock
-	popd >/dev/null
-	echo
 }
 
 check_deps() {
@@ -289,7 +274,6 @@ while getopts :hvsq: o
 do
 	case $o in
 	v) VERBOSE=1;;
-	s) SKIP_BUILD=1;;
 	q) QEMU=$OPTARG;;
 	h|*) usage;;
 	esac
@@ -302,9 +286,6 @@ QEMU=$(command -v ${QEMU:-qemu-system-$(uname -m)})
 check_deps
 
 rm -f "${LOG}"
-if [[ "${SKIP_BUILD}" != 1 ]]; then
-	build
-fi
 log_setup "Booting up VM"
 vm_setup
 vm_wait_for_ssh
