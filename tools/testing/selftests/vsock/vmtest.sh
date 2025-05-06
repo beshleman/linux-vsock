@@ -97,7 +97,7 @@ vm_setup() {
 	fi
 	vng \
 		$VNG_OPTS \
-		--run ${KERNEL_CHECKOUT} \
+		--run \
 		--qemu-opts="${QEMU_OPTS}" \
 		--qemu="${QEMU}" \
 		--user root \
