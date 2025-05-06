@@ -105,7 +105,7 @@ vm_setup() {
 vm_wait_for_ssh() {
 	i=0
 	while [[ true ]]; do
-		if [[ ${i} > ${WAIT_PERIOD_MAX} ]]; then
+		if [[ ${i} -gt ${WAIT_PERIOD_MAX} ]]; then
 			die "Timed out waiting for guest ssh"
 		fi
 		vm_ssh -- true
@@ -247,25 +247,25 @@ run_test() {
 	rc=$?
 
 	host_oops_cnt_after=$(dmesg | grep -i 'Oops' | wc -l)
-	if [[ ${host_oops_cnt_after} > ${host_oops_cnt_before} ]]; then
+	if [[ ${host_oops_cnt_after} -gt ${host_oops_cnt_before} ]]; then
 		echo "${name}: kernel oops detected on host" | log_host ${name}
 		rc=1
 	fi
 
 	host_warn_cnt_after=$(dmesg --level=warn | wc -l)
-	if [[ ${host_warn_cnt_after} > ${host_warn_cnt_before} ]]; then
+	if [[ ${host_warn_cnt_after} -gt ${host_warn_cnt_before} ]]; then
 		echo "${name}: kernel warning detected on host" | log_host ${name}
 		rc=1
 	fi
 
 	vm_oops_cnt_after=$(vm_ssh -- dmesg | grep -i 'Oops' | wc -l)
-	if [[ ${vm_oops_cnt_after} > ${vm_oops_cnt_before} ]]; then
+	if [[ ${vm_oops_cnt_after} -gt ${vm_oops_cnt_before} ]]; then
 		echo "${name}: kernel oops detected on vm" | log_host ${name}
 		rc=1
 	fi
 
 	vm_warn_cnt_after=$(vm_ssh -- dmesg --level=warn | wc -l)
-	if [[ ${vm_warn_cnt_after} > ${vm_warn_cnt_before} ]]; then
+	if [[ ${vm_warn_cnt_after} -gt ${vm_warn_cnt_before} ]]; then
 		echo "${name}: kernel warning detected on vm" | log_host ${name}
 		rc=1
 	fi
@@ -333,7 +333,7 @@ for t in ${avail_tests}; do
 	desc=""
 done
 
-if [[ ${cnt} = 0 ]]; then
+if [[ ${cnt} -eq 0 ]]; then
 	echo OK
 else
 	echo FAILED: ${cnt}
