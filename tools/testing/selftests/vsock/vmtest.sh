@@ -81,7 +81,7 @@ cleanup() {
 }
 
 check_deps() {
-	for dep in vng ${QEMU} busybox timeout pkill; do
+	for dep in vng ${QEMU} busybox timeout pkill ssh; do
 		if [[ ! -x "$(command -v ${dep})" ]]; then
 			echo -e "skip:    dependency ${dep} not found!\n"
 			exit ${KSFT_SKIP}
