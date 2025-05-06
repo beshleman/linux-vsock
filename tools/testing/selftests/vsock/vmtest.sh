@@ -8,6 +8,7 @@
 #		* busybox-static (used by virtme-ng)
 #		* qemu	(used by virtme-ng)
 
+KSFT_SKIP=4
 SCRIPT_DIR="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 KERNEL_CHECKOUT=$(realpath ${SCRIPT_DIR}/../../../..)
 VERBOSE=0
