@@ -127,24 +127,29 @@ vm_wait_for_ssh() {
 }
 
 wait_for_listener() {
-	local PORT=$1
+	local port=$1
+	local interval=$2
+	local max_intervals=$3
 	local i=0
-	while ! ss -ltn | grep -q ":${PORT}"; do
-		if [[ ${i} > ${WAIT_PERIOD_MAX} ]]; then
-			die "Timed out waiting for listener on port ${PORT}"
+	while ! ss -ltn | grep -q ":${port}"; do
+		if [[ ${i} -gt ${max_intervals} ]]; then
+			die "Timed out waiting for listener on port ${port}"
 		fi
 		i=$(( i + 1 ))
-		sleep ${WAIT_PERIOD}
+		sleep ${interval}
 	done
 }
 
 vm_wait_for_listener() {
 	local port=$1
-	vm_ssh -- "$(declare -f wait_for_listener); wait_for_listener ${port}"
+	vm_ssh <<EOF
+$(declare -f wait_for_listener)
+wait_for_listener ${port} ${WAIT_PERIOD} ${WAIT_PERIOD_MAX}
+EOF
 }
 
 host_wait_for_listener() {
-	wait_for_listener ${TEST_HOST_PORT_LISTENER}
+	wait_for_listener ${TEST_HOST_PORT_LISTENER} ${WAIT_PERIOD} ${WAIT_PERIOD_MAX}
 }
 
 log() {
