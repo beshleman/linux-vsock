@@ -24,6 +24,7 @@ SSH_HOST_PORT=2222
 VSOCK_CID=1234
 WAIT_PERIOD=3
 WAIT_PERIOD_MAX=20
+WAIT_TOTAL=$(( WAIT_PERIOD * WAIT_PERIOD_MAX ))
 
 QEMU_PIDFILE=/tmp/qemu.pid
 
@@ -102,6 +103,12 @@ vm_setup() {
 		--user root \
 		--append "${KERNEL_CMDLINE}" \
 		--rw  &>/dev/null &
+
+	timeout ${WAIT_TOTAL} \
+		bash -c 'while [[ ! -e '"${QEMU_PIDFILE}"' ]]; do sleep 1; done; exit 0'
+	if [[ ! $? -eq 0 ]]; then
+		die "failed to boot VM"
+	fi
 }
 
 vm_wait_for_ssh() {
