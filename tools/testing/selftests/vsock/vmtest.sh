@@ -10,7 +10,6 @@
 
 SCRIPT_DIR="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 KERNEL_CHECKOUT=$(realpath ${SCRIPT_DIR}/../../../..)
-QEMU=$(command -v qemu-system-$(uname -m))
 VERBOSE=0
 SKIP_BUILD=0
 VSOCK_TEST=${KERNEL_CHECKOUT}/tools/testing/vsock/vsock_test
@@ -89,6 +88,15 @@ build() {
 	make -C ${KERNEL_CHECKOUT}/tools/testing/vsock
 	popd >/dev/null
 	echo
+}
+
+check_deps() {
+	for dep in vng ${QEMU} busybox; do
+		if [[ ! -x "$(command -v ${dep})" ]]; then
+			echo -e "skip:    dependency ${dep} not found!\n"
+			exit ${KSFT_SKIP}
+		fi
+	done
 }
 
 vm_setup() {
@@ -289,14 +297,9 @@ done
 shift $((OPTIND-1))
 
 trap cleanup EXIT
+QEMU=$(command -v ${QEMU:-qemu-system-$(uname -m)})
 
-if [[ ! -x "$(command -v vng)" ]]; then
-	die "vng not found."
-fi
-
-if [[ ! -x "${QEMU}" ]]; then
-	die "${QEMU} not found."
-fi
+check_deps
 
 rm -f "${LOG}"
 if [[ "${SKIP_BUILD}" != 1 ]]; then
