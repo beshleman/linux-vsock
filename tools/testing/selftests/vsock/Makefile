@@ -1,9 +1,17 @@
 # SPDX-License-Identifier: GPL-2.0
-.PHONY: all
-all:
 
-TEST_PROGS := vmtest.sh
-EXTRA_CLEAN := vmtest.log
+CURDIR := $(abspath .)
+TOOLSDIR := $(abspath ../../..)
+
+$(OUTPUT)/vsock_test: $(TOOLSDIR)/testing/vsock/vsock_test
+	install -m 755 $< $@
+
+$(TOOLSDIR)/testing/vsock/vsock_test:
+	$(MAKE) -C $(TOOLSDIR)/testing/vsock vsock_test
+
+TEST_PROGS += vmtest.sh
+EXTRA_CLEAN += vmtest.log
+TEST_GEN_PROGS := vsock_test
 
 include ../lib.mk
 
