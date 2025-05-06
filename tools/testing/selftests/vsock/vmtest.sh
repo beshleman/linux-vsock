@@ -45,14 +45,17 @@ KERNEL_CMDLINE="virtme.dhcp net.ifnames=0 biosdevname=0 virtme.ssh virtme_ssh_us
 
 LOG=${SCRIPT_DIR}/vmtest.log
 
-#		Name				Description
-avail_tests="
-	vm_server_host_client	Run vsock_test in server mode on the VM and in client mode on the host.	
-	vm_client_host_server	Run vsock_test in client mode on the VM and in server mode on the host.	
-	vm_loopback		Run vsock_test using the loopback transport in the VM.	
-"
+TEST_NAMES=(vm_server_host_client vm_client_host_server vm_loopback)
+TEST_DESCS=(
+	"Run vsock_test in server mode on the VM and in client mode on the host."
+	"Run vsock_test in client mode on the VM and in server mode on the host."
+	"Run vsock_test using the loopback transport in the VM."
+)
 
 usage() {
+	local name
+	local desc
+	local i
 	echo
 	echo "$0 [OPTIONS] [TEST]..."
 	echo "If no TEST argument is given, all tests will be run."
@@ -60,7 +63,15 @@ usage() {
 	echo "Options"
 	echo "  -v: verbose output"
 	echo
-	echo "Available tests${avail_tests}"
+	echo "Available tests"
+
+	for ((i = 0; i < ${#TEST_NAMES[@]}; i++)); do
+		name=${TEST_NAMES[${i}]}
+		desc=${TEST_DESCS[${i}]}
+		printf "\t%-35s%-35s\n" "${name}" "${desc}"
+	done
+	echo
+
 	exit 1
 }
 
@@ -78,6 +89,32 @@ cleanup() {
 	if [[ -f "${QEMU_PIDFILE}" ]]; then
 		pkill -SIGTERM -F ${QEMU_PIDFILE} 2>&1 > /dev/null
 	fi
+}
+
+check_args() {
+	local found
+
+	for arg in "$@"; do
+		found=0
+		for name in "${TEST_NAMES[@]}"; do
+			if [[ "${name}" = "${arg}" ]]; then
+				found=1
+				break
+			fi
+		done
+
+		if [[ "${found}" -eq 0 ]]; then
+			echo "${arg} is not an available test" >&2
+			usage
+		fi
+	done
+
+	for arg in "$@"; do
+		if ! command -v > /dev/null "test_${arg}"; then
+			echo "Test ${arg} not found" >&2
+			usage
+		fi
+	done
 }
 
 check_deps() {
@@ -303,9 +340,17 @@ done
 shift $((OPTIND-1))
 
 trap cleanup EXIT
-QEMU=$(command -v ${QEMU:-qemu-system-$(uname -m)})
 
+if [[ ${#} -eq 0 ]]; then
+	ARGS=(${TEST_NAMES[@]})
+else
+	ARGS=($@)
+fi
+
+check_args "${ARGS[@]}"
 check_deps
+
+QEMU=$(command -v ${QEMU:-qemu-system-$(uname -m)})
 
 rm -f "${LOG}"
 log_setup "Booting up VM"
@@ -313,43 +358,13 @@ vm_setup
 vm_wait_for_ssh
 log_setup "VM booted up"
 
-for arg in "$@"; do
-	if ! command -v > /dev/null "test_${arg}"; then
-		echo "Test ${arg} not found"
-		die "${usage}"
-	fi
-done
-
-IFS="	
-"
 cnt=0
-name=""
-desc=""
-for t in ${avail_tests}; do
-	[ "${name}" = "" ] && name="${t}" && continue
-	# desc is unused, but we need to eat it.
-	[ "${desc}" = "" ] && desc="${t}"
-
-	run_this=0
-	if [[ "${#}" -eq 0 ]]; then
-		run_this=1
-	else
-		for arg in "$@"; do
-			if [[ "${arg}" = "${name}" ]]; then
-				run_this=1
-			fi
-		done
+for arg in "${ARGS[@]}"; do
+	run_test "${arg}"
+	rc=$?
+	if [[ ${rc} != 0 ]]; then
+		cnt=$(( cnt + 1 ))
 	fi
-
-	if [[ "${run_this}" = 1 ]]; then
-		run_test "${name}"
-		rc=$?
-		if [[ ${rc} != 0 ]]; then
-			cnt=$(( cnt + 1 ))
-		fi
-	fi
-	name=""
-	desc=""
 done
 
 if [[ ${cnt} -eq 0 ]]; then
