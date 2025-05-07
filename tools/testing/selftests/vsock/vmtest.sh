@@ -8,6 +8,7 @@
 #		* busybox-static (used by virtme-ng)
 #		* qemu	(used by virtme-ng)
 
+TAP_PREFIX="# "
 VERBOSE=0
 KSFT_PASS=0
 KSFT_FAIL=1
@@ -194,14 +195,29 @@ host_wait_for_listener() {
 	wait_for_listener ${TEST_HOST_PORT_LISTENER} ${WAIT_PERIOD} ${WAIT_PERIOD_MAX}
 }
 
+__log_stdin() {
+	cat | awk '{ printf "%s:\t%s\n","'"${prefix}"'", $0 }'
+}
+
+__log_args() {
+	echo "$*" | awk '{ printf "%s:\t%s\n","'"${prefix}"'", $0 }'
+}
+
 log() {
 	local prefix="$1"
 	shift
 
-	if [[ "$#" -eq 0 ]]; then
-		cat | awk '{ printf "%s:\t%s\n","'"${prefix}"'", $0 }' | tee -a ${LOG}
+	local redirect=
+	if [[ ${VERBOSE} -eq 0 ]]; then
+		redirect=/dev/null
 	else
-		echo "$*" | awk '{ printf "%s:\t%s\n","'"${prefix}"'", $0 }' | tee -a ${LOG}
+		redirect=/dev/stdout
+	fi
+
+	if [[ "$#" -eq 0 ]]; then
+		__log_stdin | tee -a ${LOG} > ${redirect}
+	else
+		__log_args | tee -a ${LOG} > ${redirect}
 	fi
 }
 
@@ -219,6 +235,17 @@ log_guest() {
 	testname=$1
 	shift
 	log "test:${testname}:guest" "$@"
+}
+
+tap_prefix() {
+	sed -e "s/^/${TAP_PREFIX}/"
+}
+
+tap_output() {
+	if [[ ! -z "$TAP_PREFIX" ]]; then
+		read str
+		echo $str
+	fi
 }
 
 test_vm_server_host_client() {
@@ -305,25 +332,25 @@ run_test() {
 	host_oops_cnt_after=$(dmesg | grep -i 'Oops' | wc -l)
 	if [[ ${host_oops_cnt_after} -gt ${host_oops_cnt_before} ]]; then
 		echo "${name}: kernel oops detected on host" | log_host ${name}
-		rc=1
+		rc=$KSFT_FAIL
 	fi
 
 	host_warn_cnt_after=$(dmesg --level=warn | wc -l)
 	if [[ ${host_warn_cnt_after} -gt ${host_warn_cnt_before} ]]; then
 		echo "${name}: kernel warning detected on host" | log_host ${name}
-		rc=1
+		rc=$KSFT_FAIL
 	fi
 
 	vm_oops_cnt_after=$(vm_ssh -- dmesg | grep -i 'Oops' | wc -l)
 	if [[ ${vm_oops_cnt_after} -gt ${vm_oops_cnt_before} ]]; then
 		echo "${name}: kernel oops detected on vm" | log_host ${name}
-		rc=1
+		rc=$KSFT_FAIL
 	fi
 
 	vm_warn_cnt_after=$(vm_ssh -- dmesg --level=warn | wc -l)
 	if [[ ${vm_warn_cnt_after} -gt ${vm_warn_cnt_before} ]]; then
 		echo "${name}: kernel warning detected on vm" | log_host ${name}
-		rc=1
+		rc=$KSFT_FAIL
 	fi
 
 	return ${rc}
@@ -352,27 +379,42 @@ check_deps
 
 QEMU=$(command -v ${QEMU:-qemu-system-$(uname -m)})
 
+echo "TAP version 13" | tap_output
+echo "1..${#ARGS[@]}" | tap_output
+
 rm -f "${LOG}"
 log_setup "Booting up VM"
 vm_setup
 vm_wait_for_ssh
 log_setup "VM booted up"
 
-cnt=0
+cnt_pass=0
+cnt_fail=0
+cnt_skip=0
+cnt_total=0
+exitcode=0
 for arg in "${ARGS[@]}"; do
 	run_test "${arg}"
 	rc=$?
-	if [[ ${rc} != 0 ]]; then
-		cnt=$(( cnt + 1 ))
+	if [[ ${rc} == $KSFT_PASS ]]; then
+		cnt_pass=$(( cnt_pass + 1 ))
+		echo "[PASS]" | tap_prefix
+		echo "ok ${cnt_total} ${arg}" | tap_output
+	elif [[ ${rc} == $KSFT_SKIP ]]; then
+		cnt_skip=$(( cnt_skip + 1 ))
+		echo "[SKIP]" | tap_prefix
+		echo "ok ${cnt_total} ${arg} # SKIP" | tap_output
+		exitcode=$KSFT_SKIP
+	elif [[ ${rc} == $KSFT_FAIL ]]; then
+		cnt_fail=$(( cnt_fail + 1 ))
+		echo "[FAIL]" | tap_prefix
+		echo "not ok ${cnt_fail} ${arg} # exit=$rc" | tap_output
+		exitcode=$KSFT_FAIL
 	fi
+	cnt_total=$(( cnt_total + 1 ))
 done
 
-if [[ ${cnt} -eq 0 ]]; then
-	echo OK
-	rc="${KSFT_PASS}"
-else
-	echo FAILED: ${cnt}
-	rc="${KSFT_FAIL}"
-fi
-echo "Log: ${LOG}"
+echo "SUMMARY: PASS=${cnt_pass} SKIP=${cnt_skip} FAIL=${cnt_fail}" | tap_prefix
+echo "1..${cnt_total}" | tap_output
+
 exit ${rc}
