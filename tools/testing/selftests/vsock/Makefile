@@ -11,7 +11,7 @@ $(TOOLSDIR)/testing/vsock/vsock_test:
 
 TEST_PROGS += vmtest.sh
 EXTRA_CLEAN += vmtest.log
-TEST_GEN_PROGS := vsock_test
+TEST_GEN_FILES := vsock_test
 
 include ../lib.mk
 
