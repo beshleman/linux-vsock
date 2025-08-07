@@ -64,6 +64,7 @@ struct net_devmem_dmabuf_binding {
 	 * net_iovs in the TX path.
 	 */
 	struct net_iov **tx_vec;
+	struct net_iov **rx_vec;
 
 	struct work_struct unbind_w;
 };
@@ -94,6 +95,9 @@ int net_devmem_bind_dmabuf_to_queue(struct net_device *dev, u32 rxq_idx,
 				    struct net_devmem_dmabuf_binding *binding,
 				    struct netlink_ext_ack *extack);
 void net_devmem_bind_tx_release(struct sock *sk);
+
+bool net_devmem_validate_niov(struct sock *sk, const struct sk_buff *skb,
+			      struct net_iov *niov);
 
 static inline struct dmabuf_genpool_chunk_owner *
 net_devmem_iov_to_chunk_owner(const struct net_iov *niov)

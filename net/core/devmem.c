@@ -232,6 +232,14 @@ net_devmem_bind_dmabuf(struct net_device *dev,
 			err = -ENOMEM;
 			goto err_unmap;
 		}
+	} else if (direction == DMA_FROM_DEVICE) {
+		binding->rx_vec = kvmalloc_array(dmabuf->size / PAGE_SIZE,
+						 sizeof(struct net_iov *),
+						 GFP_KERNEL);
+		if (!binding->rx_vec) {
+			err = -ENOMEM;
+			goto err_unmap;
+		}
 	}
 
 	/* For simplicity we expect to make PAGE_SIZE allocations, but the
@@ -242,7 +250,7 @@ net_devmem_bind_dmabuf(struct net_device *dev,
 					      dev_to_node(&dev->dev));
 	if (!binding->chunk_pool) {
 		err = -ENOMEM;
-		goto err_tx_vec;
+		goto err_vec;
 	}
 
 	virtual = 0;
@@ -308,8 +316,11 @@ err_free_chunks:
 	gen_pool_for_each_chunk(binding->chunk_pool,
 				net_devmem_dmabuf_free_chunk_owner, NULL);
 	gen_pool_destroy(binding->chunk_pool);
-err_tx_vec:
-	kvfree(binding->tx_vec);
+err_vec:
+	if (direction == DMA_TO_DEVICE)
+		kvfree(binding->tx_vec);
+	else if (direction == DMA_FROM_DEVICE)
+		kvfree(binding->rx_vec);
 err_unmap:
 	dma_buf_unmap_attachment_unlocked(binding->attachment, binding->sgt,
 					  direction);
@@ -376,6 +387,26 @@ out_err:
 
 	return ERR_PTR(err);
 }
+
+bool net_devmem_validate_niov(struct sock *sk, const struct sk_buff *skb,
+			      struct net_iov *niov)
+{
+	struct net_devmem_dmabuf_binding *binding = net_devmem_iov_binding(niov);
+
+	if (WARN_ONCE(!sk->sk_dst_cache, "no sk_dst_cache for devmem rx socket"))
+		return false;
+
+	if (WARN_ONCE(sk->sk_dst_cache->dev != binding->dev,
+		      "device changed for devmem sock"))
+		return false;
+
+	if (WARN_ONCE(binding != sk->sk_rx_binding,
+		      "binding changed for devmem RX socket"))
+		return false;
+
+	return true;
+}
+EXPORT_SYMBOL_GPL(net_devmem_validate_niov);
 
 struct net_iov *
 net_devmem_get_niov_at(struct net_devmem_dmabuf_binding *binding,
