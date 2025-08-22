@@ -61,9 +61,15 @@ struct net_devmem_dmabuf_binding {
 
 	/* Array of net_iov pointers for this binding, sorted by virtual
 	 * address. This array is convenient to map the virtual addresses to
-	 * net_iovs in the TX path.
+	 * net_iovs.
 	 */
 	struct net_iov **tx_vec;
+	struct net_iov **rx_vec;
+
+	/* Array of counters of token references given to user. This is
+	 * used to prevent users from over-decrementing references.
+	 */
+	u16 *rx_vec_uref;
 
 	struct work_struct unbind_w;
 };
@@ -94,6 +100,9 @@ int net_devmem_bind_dmabuf_to_queue(struct net_device *dev, u32 rxq_idx,
 				    struct net_devmem_dmabuf_binding *binding,
 				    struct netlink_ext_ack *extack);
 void net_devmem_bind_tx_release(struct sock *sk);
+
+bool net_devmem_niov_valid(struct sock *sk, const struct sk_buff *skb,
+			   struct net_iov *niov);
 
 static inline struct dmabuf_genpool_chunk_owner *
 net_devmem_iov_to_chunk_owner(const struct net_iov *niov)
