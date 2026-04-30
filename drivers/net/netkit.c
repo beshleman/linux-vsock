@@ -370,7 +370,49 @@ static int netkit_init(struct net_device *dev)
 static u16 netkit_select_queue(struct net_device *dev, struct sk_buff *skb,
 			       struct net_device *sb_dev)
 {
-	return 0;
+	struct netdev_queue *txq, *nk_txq, *lease;
+	struct net_device *phys_dev = NULL;
+	int qm;
+	u16 n;
+	int i;
+
+	/* If the socket already has a physical queue pinned (qm >= 0),
+	 * backtrack via the bidirectional lease to recover netkit queue N.
+	 * This prevents netdev_pick_tx() from misinterpreting the physical
+	 * queue index as a netkit queue index on subsequent sends.
+	 */
+	qm = sk_tx_queue_get(skb->sk);
+	if (qm >= 0) {
+		for (i = 1; i < dev->real_num_tx_queues; i++) {
+			lease = READ_ONCE(netdev_get_tx_queue(dev, i)->lease);
+			if (lease) {
+				phys_dev = lease->dev;
+				break;
+			}
+		}
+		if (phys_dev && (u32)qm < phys_dev->real_num_tx_queues) {
+			txq = netdev_get_tx_queue(phys_dev, qm);
+			nk_txq = READ_ONCE(txq->lease);
+			if (nk_txq && nk_txq->dev == dev)
+				return nk_txq - dev->_tx;
+		}
+		/* qm does not correspond to a lease; do fresh selection. */
+	}
+
+	/* Fresh selection via XPS/hash. If the result is a leased netkit
+	 * TX queue, pin the corresponding physical queue on the socket so
+	 * the physical device's netdev_pick_tx uses it on the redirect hop.
+	 */
+	n = netdev_pick_tx(dev, skb, sb_dev);
+
+	if (n >= 1 && n < dev->real_num_tx_queues &&
+	    netif_txq_is_leased(dev, n)) {
+		lease = READ_ONCE(netdev_get_tx_queue(dev, n)->lease);
+		if (lease)
+			sk_tx_queue_set(skb->sk, lease - lease->dev->_tx);
+	}
+
+	return n;
 }
 
 static void netkit_uninit(struct net_device *dev);
