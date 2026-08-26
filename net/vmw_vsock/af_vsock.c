@@ -130,6 +130,24 @@
  *       a different transport that *does* support local mode. For
  *       example, virtio-vsock may not support local mode, but the socket
  *       may still accept a connection from vhost-vsock which does.
+ *
+ * - A guest has a single vsock device, owned by the guest->host transport.
+ *   IOCTL_VM_SOCKETS_ASSIGN_G2H_NETNS on /dev/vsock assigns it to the
+ *   namespace of the caller. It starts out in init_net. The mode rules then
+ *   decide who may use it, and which namespace packets from the host are
+ *   delivered to:
+ *
+ *   - assigned to a global mode namespace - every global mode namespace may
+ *     use it. init_net is global, so the default is the behaviour that
+ *     predates the ioctl.
+ *   - assigned to a local mode namespace - only that namespace may use it.
+ *     This is how a nested VM is isolated from the rest of the guest.
+ *
+ *   Connections made before an assignment, from a namespace that can no
+ *   longer reach the device, are reset.
+ *
+ *   No reference is taken on the assigned namespace. As is done for netdevs,
+ *   the device is moved back to init_net when that namespace is destroyed.
  */
 
 #include <linux/compat.h>
@@ -207,6 +225,11 @@ static const struct vsock_transport *transport_dgram;
 /* Transport used for local communication */
 static const struct vsock_transport *transport_local;
 static DEFINE_MUTEX(vsock_register_mutex);
+
+/* Network namespace of the g2h device. Protected by
+ * vsock_register_mutex/RCU.
+ */
+static struct net __rcu *vsock_g2h_net = RCU_INITIALIZER(&init_net);
 
 /**** UTILS ****/
 
@@ -622,6 +645,12 @@ int vsock_assign_transport(struct vsock_sock *vsk, struct vsock_sock *psk)
 		goto err;
 	}
 
+	if (new_transport && new_transport == transport_g2h &&
+	    !vsock_g2h_net_reachable(sock_net(sk))) {
+		ret = -ENETUNREACH;
+		goto err;
+	}
+
 	/* We increase the module refcnt to prevent the transport unloading
 	 * while there are open sockets assigned to it.
 	 */
@@ -709,6 +738,89 @@ bool vsock_find_cid(unsigned int cid)
 	return false;
 }
 EXPORT_SYMBOL_GPL(vsock_find_cid);
+
+/* Return the namespace the g2h device belongs to with a reference held, or
+ * NULL if that namespace is being destroyed.
+ */
+struct net *vsock_g2h_net_get(void)
+{
+	struct net *net;
+
+	rcu_read_lock();
+	net = maybe_get_net(rcu_dereference(vsock_g2h_net));
+	rcu_read_unlock();
+
+	return net;
+}
+EXPORT_SYMBOL_GPL(vsock_g2h_net_get);
+
+/* Return true if sockets in @net may use the g2h device. */
+bool vsock_g2h_net_reachable(struct net *net)
+{
+	bool reachable;
+
+	rcu_read_lock();
+	reachable = vsock_net_check_mode(net, rcu_dereference(vsock_g2h_net));
+	rcu_read_unlock();
+
+	return reachable;
+}
+EXPORT_SYMBOL_GPL(vsock_g2h_net_reachable);
+
+static void vsock_reset_unreachable_sock(struct sock *sk)
+{
+	if (vsock_g2h_net_reachable(sock_net(sk)))
+		return;
+
+	sk->sk_state = TCP_CLOSE;
+	sk->sk_err = ECONNRESET;
+	sk_error_report(sk);
+}
+
+/* Move the g2h device to @net. Returns -ENODEV if no g2h transport is loaded
+ * and -EOPNOTSUPP if the loaded one cannot be moved.
+ */
+static int vsock_g2h_net_assign(struct net *net)
+{
+	int ret = 0;
+
+	mutex_lock(&vsock_register_mutex);
+	if (!transport_g2h) {
+		ret = -ENODEV;
+	} else if (!transport_g2h->netns_assign_allow ||
+		   !transport_g2h->netns_assign_allow()) {
+		ret = -EOPNOTSUPP;
+	} else {
+		rcu_assign_pointer(vsock_g2h_net, net);
+		vsock_for_each_connected_socket(transport_g2h,
+						vsock_reset_unreachable_sock);
+	}
+	mutex_unlock(&vsock_register_mutex);
+
+	return ret;
+}
+
+/* Move the g2h device back to init_net if it lives in @net, which is about to
+ * be destroyed.
+ */
+static void vsock_g2h_net_reset(struct net *net)
+{
+	bool reset = false;
+
+	/* Avoid taking the mutex if the namespaces don't match. */
+	if (likely(rcu_access_pointer(vsock_g2h_net) != net))
+		return;
+
+	mutex_lock(&vsock_register_mutex);
+	if (rcu_access_pointer(vsock_g2h_net) == net) {
+		rcu_assign_pointer(vsock_g2h_net, &init_net);
+		reset = true;
+	}
+	mutex_unlock(&vsock_register_mutex);
+
+	if (reset)
+		synchronize_rcu();
+}
 
 static struct sock *vsock_dequeue_accept(struct sock *listener)
 {
@@ -2745,6 +2857,15 @@ static long vsock_dev_do_ioctl(struct file *filp,
 			retval = -EFAULT;
 		break;
 
+	case IOCTL_VM_SOCKETS_ASSIGN_G2H_NETNS:
+		if (!capable(CAP_NET_ADMIN)) {
+			retval = -EPERM;
+			break;
+		}
+
+		retval = vsock_g2h_net_assign(current->nsproxy->net_ns);
+		break;
+
 	default:
 		retval = -ENOIOCTLCMD;
 	}
@@ -2978,6 +3099,7 @@ static __net_init int vsock_sysctl_init_net(struct net *net)
 
 static __net_exit void vsock_sysctl_exit_net(struct net *net)
 {
+	vsock_g2h_net_reset(net);
 	vsock_sysctl_unregister(net);
 }
 
@@ -3104,13 +3226,21 @@ EXPORT_SYMBOL_GPL(vsock_core_register);
 
 void vsock_core_unregister(const struct vsock_transport *t)
 {
+	bool g2h_net_reset = false;
+
 	mutex_lock(&vsock_register_mutex);
 
 	if (transport_h2g == t)
 		transport_h2g = NULL;
 
-	if (transport_g2h == t)
+	if (transport_g2h == t) {
 		transport_g2h = NULL;
+		/* The device is gone, so is its namespace assignment. */
+		if (rcu_access_pointer(vsock_g2h_net) != &init_net) {
+			rcu_assign_pointer(vsock_g2h_net, &init_net);
+			g2h_net_reset = true;
+		}
+	}
 
 	if (transport_dgram == t)
 		transport_dgram = NULL;
@@ -3119,6 +3249,9 @@ void vsock_core_unregister(const struct vsock_transport *t)
 		transport_local = NULL;
 
 	mutex_unlock(&vsock_register_mutex);
+
+	if (g2h_net_reset)
+		synchronize_rcu();
 }
 EXPORT_SYMBOL_GPL(vsock_core_unregister);
 
