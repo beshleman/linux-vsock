@@ -17,6 +17,15 @@ readonly KERNEL_CHECKOUT=$(realpath "${SCRIPT_DIR}"/../../../../)
 source "${SCRIPT_DIR}"/../kselftest/ktap_helpers.sh
 
 readonly VSOCK_TEST="${SCRIPT_DIR}"/vsock_test
+readonly VSOCK_ASSIGN_G2H_NETNS="${SCRIPT_DIR}"/vsock_assign_g2h_netns
+# Path of the above, once copied into the VM by setup_home().
+readonly VM_ASSIGN_G2H_NETNS=/root/vsock_assign_g2h_netns
+# How long a namespace created by vm_ns_start() stays alive if the test forgets
+# to tear it down. Longer than any single test, shorter than a suite run.
+readonly VM_NS_LIFETIME=600
+# Any uid that is not root; used to check the assign ioctl rejects unprivileged
+# callers even when they bring their own user namespace.
+readonly UNPRIV_UID=65534
 readonly TEST_GUEST_PORT=51000
 readonly TEST_HOST_PORT=50000
 readonly TEST_HOST_PORT_LISTENER=50001
@@ -80,6 +89,14 @@ readonly TEST_NAMES=(
 	ns_delete_vm_ok
 	ns_delete_host_ok
 	ns_delete_both_ok
+	ns_guest_assign_g2h_netns_no_cap_net_admin_fails
+	ns_guest_assign_g2h_netns_unpriv_user_ns_fails
+	ns_guest_local_connect_to_host_fails
+	ns_guest_assign_g2h_netns_connect_to_host_ok
+	ns_guest_assign_g2h_netns_init_ns_connect_fails
+	ns_guest_assign_g2h_netns_host_connect_ok
+	ns_guest_assign_g2h_netns_reset_on_ns_delete_ok
+	ns_guest_assign_g2h_netns_old_conn_send_fails
 )
 readonly TEST_DESCS=(
 	# vm_server_host_client
@@ -156,12 +173,38 @@ readonly TEST_DESCS=(
 
 	# ns_delete_both_ok
 	"Check that deleting the VM and host's namespaces does not break the socket connection"
+
+	# ns_guest_assign_g2h_netns_no_cap_net_admin_fails
+	"Check assigning the guest's vsock device to a namespace needs CAP_NET_ADMIN."
+
+	# ns_guest_assign_g2h_netns_unpriv_user_ns_fails
+	"Check an unprivileged user cannot claim the guest's vsock device via a user ns."
+
+	# ns_guest_local_connect_to_host_fails
+	"Check a guest process in a local ns cannot reach the host without the assign ioctl."
+
+	# ns_guest_assign_g2h_netns_connect_to_host_ok
+	"Check a guest process in a local ns reaches the host once the vsock device is assigned to it."
+
+	# ns_guest_assign_g2h_netns_init_ns_connect_fails
+	"Check the guest's initial ns loses vsock once the device is assigned to another ns."
+
+	# ns_guest_assign_g2h_netns_host_connect_ok
+	"Check the host reaches a guest listener in the ns the vsock device is assigned to."
+
+	# ns_guest_assign_g2h_netns_reset_on_ns_delete_ok
+	"Check the guest's vsock device returns to the initial ns when its ns is deleted."
+
+	# ns_guest_assign_g2h_netns_old_conn_send_fails
+	"Check connections made before the assign stop sending once they lose the device."
 )
 
 readonly USE_SHARED_VM=(
 	vm_server_host_client
 	vm_client_host_server
 	vm_loopback
+	ns_guest_assign_g2h_netns_no_cap_net_admin_fails
+	ns_guest_assign_g2h_netns_unpriv_user_ns_fails
 )
 readonly NS_MODES=("local" "global")
 
@@ -309,18 +352,21 @@ check_args() {
 }
 
 check_deps() {
-	for dep in vng ${QEMU} busybox pkill ssh ss socat nsenter; do
+	for dep in vng ${QEMU} busybox pkill ssh ss socat nsenter unshare \
+		setpriv; do
 		if [[ ! -x $(command -v "${dep}") ]]; then
 			echo -e "skip:    dependency ${dep} not found!\n"
 			exit "${KSFT_SKIP}"
 		fi
 	done
 
-	if [[ ! -x $(command -v "${VSOCK_TEST}") ]]; then
-		printf "skip:    %s not found!" "${VSOCK_TEST}"
-		printf " Please build the kselftest vsock target.\n"
-		exit "${KSFT_SKIP}"
-	fi
+	for prog in "${VSOCK_TEST}" "${VSOCK_ASSIGN_G2H_NETNS}"; do
+		if [[ ! -x $(command -v "${prog}") ]]; then
+			printf "skip:    %s not found!" "${prog}"
+			printf " Please build the kselftest vsock target.\n"
+			exit "${KSFT_SKIP}"
+		fi
+	done
 }
 
 check_netns() {
@@ -409,6 +455,7 @@ setup_home() {
 	ssh-keygen -t ed25519 -f "${SSH_KEY_PATH}" -N "" -q
 	cp "${SSH_KEY_PATH}".pub "$(dirname "${SSH_KEY_PATH}")"/id_virtme.pub
 	cp "${VSOCK_TEST}" "${TEST_HOME}"/vsock_test
+	cp "${VSOCK_ASSIGN_G2H_NETNS}" "${TEST_HOME}"/vsock_assign_g2h_netns
 }
 
 create_pidfile() {
@@ -534,6 +581,48 @@ vm_wait_for_ssh() {
 		i=$(( i + 1 ))
 		sleep ${WAIT_PERIOD}
 	done
+}
+
+# Create a network namespace inside the VM and echo the pid of the process
+# holding it open. The namespace is created in "local" mode, so it is isolated
+# from the guest's initial namespace, and it outlives the ssh session, so that
+# several commands can be run in it with vm_ns_exec().
+#
+# ip netns is deliberately not used here: the guest's rootfs is shared with the
+# host over 9p, so it has nowhere to persist the namespace mount.
+vm_ns_start() {
+	local ns=$1
+
+	vm_ssh "${ns}" -- \
+		"echo local > /proc/sys/net/vsock/child_ns_mode" &>/dev/null
+
+	vm_ssh "${ns}" -- "unshare -n sleep ${VM_NS_LIFETIME}" \
+		'>/dev/null 2>&1 & echo $!'
+}
+
+vm_ns_stop() {
+	local ns=$1
+	local nspid=$2
+
+	vm_ssh "${ns}" -- kill "${nspid}" &>/dev/null
+}
+
+# Run a command in a namespace created by vm_ns_start(). The command must not
+# contain single quotes.
+vm_ns_exec() {
+	local ns=$1
+	local nspid=$2
+	local cmd=$3
+
+	vm_ssh "${ns}" -- nsenter -t "${nspid}" -n sh -c "'${cmd}'"
+}
+
+# Assign the guest's vsock device to a namespace created by vm_ns_start().
+vm_ns_assign_g2h() {
+	local ns=$1
+	local nspid=$2
+
+	vm_ns_exec "${ns}" "${nspid}" "${VM_ASSIGN_G2H_NETNS}"
 }
 
 # derived from selftests/net/net_helper.sh
@@ -1427,6 +1516,363 @@ test_ns_delete_host_ok() {
 
 test_ns_delete_both_ok() {
 	check_ns_delete_doesnt_break_connection "both"
+}
+
+# Boot a VM in the initial host namespace and create a local-mode namespace
+# inside the guest. The caller must pair this with guest_ns_cleanup().
+#
+# run_ns_tests() only checks the host's dmesg, so the guest's is snapshotted
+# here and checked by guest_ns_cleanup().
+guest_ns_setup() {
+	GUEST_NS_PIDFILE="$(create_pidfile)"
+	GUEST_NS_PID=""
+	GUEST_NS_OOPS_BEFORE=0
+	GUEST_NS_WARN_BEFORE=0
+
+	if ! vm_start "${GUEST_NS_PIDFILE}" "init_ns"; then
+		log_host "failed to start vm (cid=${VSOCK_CID})"
+		return 1
+	fi
+
+	vm_wait_for_ssh "init_ns"
+
+	GUEST_NS_PID="$(vm_ns_start "init_ns")"
+	if [[ -z "${GUEST_NS_PID}" ]]; then
+		log_host "failed to create a namespace inside the guest"
+		return 1
+	fi
+
+	GUEST_NS_OOPS_BEFORE=$(vm_dmesg_oops_count "init_ns")
+	GUEST_NS_WARN_BEFORE=$(vm_dmesg_warn_count "init_ns")
+
+	return 0
+}
+
+# Tear down what guest_ns_setup() created, and return non-zero if the guest
+# logged an oops or a vsock warning in the meantime.
+guest_ns_cleanup() {
+	local rc=0
+
+	if [[ -n "${GUEST_NS_PID}" ]]; then
+		vm_ns_stop "init_ns" "${GUEST_NS_PID}"
+	fi
+
+	vm_dmesg_check "${GUEST_NS_PIDFILE}" "init_ns" \
+		"${GUEST_NS_OOPS_BEFORE}" "${GUEST_NS_WARN_BEFORE}" || rc=1
+
+	terminate_pidfiles "${GUEST_NS_PIDFILE}"
+
+	return "${rc}"
+}
+
+# Wait for a vsock listener inside a namespace created by vm_ns_start().
+vm_ns_wait_for_listener() {
+	local ns=$1
+	local nspid=$2
+	local port=$3
+	local i
+
+	for ((i = 0; i < WAIT_PERIOD_MAX; i++)); do
+		if vm_ns_exec "${ns}" "${nspid}" \
+			"ss --listening --vsock --numeric" 2>/dev/null |
+				grep -q ":${port} "; then
+			return 0
+		fi
+		sleep 1
+	done
+
+	return 1
+}
+
+# Send a string from the guest to a host listener and store what the host
+# received in XFER_RESULT. The sender runs in the guest namespace held by
+# <nspid>, or in the guest's initial namespace when <nspid> is empty.
+guest_send_to_host() {
+	local ns=$1
+	local nspid=$2
+	local port=$3
+	local cmd="echo TEST | socat -u STDIN VSOCK-CONNECT:2:${port}"
+	local outfile pid
+
+	XFER_RESULT=""
+
+	outfile=$(mktemp)
+	socat -u VSOCK-LISTEN:"${port}" STDOUT > "${outfile}" 2>/dev/null &
+	pid=$!
+	host_wait_for_listener "${ns}" "${port}" "vsock"
+
+	if [[ -n "${nspid}" ]]; then
+		vm_ns_exec "${ns}" "${nspid}" "${cmd}" 2>/dev/null
+	else
+		vm_ssh "${ns}" -- "${cmd}" 2>/dev/null
+	fi
+
+	timeout "${WAIT_PERIOD}" \
+		bash -c 'while [[ ! -s '"${outfile}"' ]]; do sleep 1; done'
+
+	terminate_pids "${pid}"
+	XFER_RESULT=$(cat "${outfile}")
+	rm -f "${outfile}"
+}
+
+# Send a string from the host to a listener in the guest and store what the
+# guest received in XFER_RESULT. The listener runs in the guest namespace held
+# by <nspid>, or in the guest's initial namespace when <nspid> is empty.
+host_send_to_guest() {
+	local ns=$1
+	local nspid=$2
+	local port=$3
+	local cmd="socat -u VSOCK-LISTEN:${port} STDOUT"
+	local dst="VSOCK-CONNECT:${VSOCK_CID}:${port}"
+	local outfile pid
+
+	XFER_RESULT=""
+
+	outfile=$(mktemp)
+	if [[ -n "${nspid}" ]]; then
+		vm_ns_exec "${ns}" "${nspid}" "${cmd}" \
+			> "${outfile}" 2>/dev/null &
+		pid=$!
+		vm_ns_wait_for_listener "${ns}" "${nspid}" "${port}"
+	else
+		vm_ssh "${ns}" -- "${cmd}" > "${outfile}" 2>/dev/null &
+		pid=$!
+		vm_wait_for_listener "${ns}" "${port}" "vsock"
+	fi
+
+	echo TEST | socat -u STDIN "${dst}" 2>/dev/null
+
+	timeout "${WAIT_PERIOD}" \
+		bash -c 'while [[ ! -s '"${outfile}"' ]]; do sleep 1; done'
+
+	terminate_pids "${pid}"
+	XFER_RESULT=$(cat "${outfile}")
+	rm -f "${outfile}"
+}
+
+test_ns_guest_assign_g2h_netns_no_cap_net_admin_fails() {
+	local cmd="unshare -n setpriv --bounding-set=-net_admin"
+	local out
+	local rc
+
+	out=$(vm_ssh "init_ns" -- "${cmd}" "${VM_ASSIGN_G2H_NETNS}" 2>&1)
+	rc=$?
+
+	if [[ "${rc}" -eq 0 ]]; then
+		log_host "assign ioctl succeeded without CAP_NET_ADMIN"
+		return "${KSFT_FAIL}"
+	fi
+
+	if [[ "${out}" != *"Operation not permitted"* ]]; then
+		log_host "expected EPERM, got: ${out}"
+		return "${KSFT_FAIL}"
+	fi
+
+	return "${KSFT_PASS}"
+}
+
+# An unprivileged user holds CAP_NET_ADMIN over a namespace it makes inside its
+# own user namespace, so a ns_capable() check would let it claim the device.
+test_ns_guest_assign_g2h_netns_unpriv_user_ns_fails() {
+	local unpriv="setpriv --reuid=${UNPRIV_UID} --regid=${UNPRIV_UID}"
+	local helper=/tmp/vsock_assign_g2h_netns
+	local out
+	local rc
+
+	unpriv="${unpriv} --clear-groups"
+
+	if ! vm_ssh "init_ns" -- "${unpriv} unshare -U true"; then
+		log_host "unprivileged user namespaces unavailable, skipping"
+		return "${KSFT_SKIP}"
+	fi
+
+	# The home shared with the guest is root-only, so stage the helper where
+	# an unprivileged user can execute it.
+	vm_ssh "init_ns" -- \
+		"cp ${VM_ASSIGN_G2H_NETNS} ${helper} && chmod 755 ${helper}"
+
+	out=$(vm_ssh "init_ns" -- "${unpriv} unshare -Urn ${helper}" 2>&1)
+	rc=$?
+
+	if [[ "${rc}" -eq 0 ]]; then
+		log_host "unprivileged user claimed the vsock device"
+		return "${KSFT_FAIL}"
+	fi
+
+	if [[ "${out}" != *"Operation not permitted"* ]]; then
+		log_host "expected EPERM, got: ${out}"
+		return "${KSFT_FAIL}"
+	fi
+
+	return "${KSFT_PASS}"
+}
+
+test_ns_guest_assign_g2h_netns_old_conn_send_fails() {
+	local gap=$(( WAIT_PERIOD * 3 ))
+	local port=12346
+	local outfile pid result
+
+	guest_ns_setup || { guest_ns_cleanup; return "${KSFT_FAIL}"; }
+
+	outfile=$(mktemp)
+	socat -u VSOCK-LISTEN:"${port}" STDOUT > "${outfile}" 2>/dev/null &
+	pid=$!
+	host_wait_for_listener "init_ns" "${port}" "vsock"
+
+	# One connection from the guest's initial ns that writes, waits, then
+	# writes again. The device is handed to another namespace in between,
+	# so only the first write may arrive.
+	vm_ssh "init_ns" -- \
+		"(echo FIRST; sleep ${gap}; echo SECOND) |" \
+		"socat -u STDIN VSOCK-CONNECT:2:${port}" &>/dev/null &
+
+	sleep "${WAIT_PERIOD}"
+
+	if ! vm_ns_assign_g2h "init_ns" "${GUEST_NS_PID}"; then
+		log_host "failed to assign the vsock device to the guest ns"
+		terminate_pids "${pid}"
+		rm -f "${outfile}"
+		guest_ns_cleanup
+		return "${KSFT_FAIL}"
+	fi
+
+	# Let the second write happen and land, if it is going to.
+	sleep $(( gap + WAIT_PERIOD ))
+
+	terminate_pids "${pid}"
+	result=$(cat "${outfile}")
+	rm -f "${outfile}"
+
+	guest_ns_cleanup || return "${KSFT_FAIL}"
+
+	if [[ "${result}" != *FIRST* ]]; then
+		log_host "connection did not work before the assign: [${result}]"
+		return "${KSFT_FAIL}"
+	fi
+
+	if [[ "${result}" == *SECOND* ]]; then
+		log_host "old connection still delivered after the assign"
+		return "${KSFT_FAIL}"
+	fi
+
+	return "${KSFT_PASS}"
+}
+
+test_ns_guest_local_connect_to_host_fails() {
+	local port=12345
+
+	guest_ns_setup || { guest_ns_cleanup; return "${KSFT_FAIL}"; }
+
+	guest_send_to_host "init_ns" "${GUEST_NS_PID}" "${port}"
+
+	guest_ns_cleanup || return "${KSFT_FAIL}"
+
+	if [[ "${XFER_RESULT}" == TEST ]]; then
+		return "${KSFT_FAIL}"
+	fi
+
+	return "${KSFT_PASS}"
+}
+
+test_ns_guest_assign_g2h_netns_connect_to_host_ok() {
+	local port=12345
+
+	guest_ns_setup || { guest_ns_cleanup; return "${KSFT_FAIL}"; }
+
+	if ! vm_ns_assign_g2h "init_ns" "${GUEST_NS_PID}"; then
+		log_host "failed to assign the vsock device to the guest ns"
+		guest_ns_cleanup
+		return "${KSFT_FAIL}"
+	fi
+
+	guest_send_to_host "init_ns" "${GUEST_NS_PID}" "${port}"
+
+	guest_ns_cleanup || return "${KSFT_FAIL}"
+
+	if [[ "${XFER_RESULT}" != TEST ]]; then
+		return "${KSFT_FAIL}"
+	fi
+
+	return "${KSFT_PASS}"
+}
+
+test_ns_guest_assign_g2h_netns_init_ns_connect_fails() {
+	local port=12345
+
+	guest_ns_setup || { guest_ns_cleanup; return "${KSFT_FAIL}"; }
+
+	if ! vm_ns_assign_g2h "init_ns" "${GUEST_NS_PID}"; then
+		log_host "failed to assign the vsock device to the guest ns"
+		guest_ns_cleanup
+		return "${KSFT_FAIL}"
+	fi
+
+	# The device now belongs to a local-mode namespace, so the guest's
+	# initial namespace must no longer reach the host.
+	guest_send_to_host "init_ns" "" "${port}"
+
+	guest_ns_cleanup || return "${KSFT_FAIL}"
+
+	if [[ "${XFER_RESULT}" == TEST ]]; then
+		return "${KSFT_FAIL}"
+	fi
+
+	return "${KSFT_PASS}"
+}
+
+test_ns_guest_assign_g2h_netns_host_connect_ok() {
+	local port=12345
+
+	guest_ns_setup || { guest_ns_cleanup; return "${KSFT_FAIL}"; }
+
+	if ! vm_ns_assign_g2h "init_ns" "${GUEST_NS_PID}"; then
+		log_host "failed to assign the vsock device to the guest ns"
+		guest_ns_cleanup
+		return "${KSFT_FAIL}"
+	fi
+
+	host_send_to_guest "init_ns" "${GUEST_NS_PID}" "${port}"
+
+	guest_ns_cleanup || return "${KSFT_FAIL}"
+
+	if [[ "${XFER_RESULT}" != TEST ]]; then
+		return "${KSFT_FAIL}"
+	fi
+
+	return "${KSFT_PASS}"
+}
+
+test_ns_guest_assign_g2h_netns_reset_on_ns_delete_ok() {
+	local port=12345
+	local i
+
+	guest_ns_setup || { guest_ns_cleanup; return "${KSFT_FAIL}"; }
+
+	if ! vm_ns_assign_g2h "init_ns" "${GUEST_NS_PID}"; then
+		log_host "failed to assign the vsock device to the guest ns"
+		guest_ns_cleanup
+		return "${KSFT_FAIL}"
+	fi
+
+	vm_ns_stop "init_ns" "${GUEST_NS_PID}"
+	GUEST_NS_PID=""
+
+	# Namespaces are dismantled asynchronously, so give the guest's initial
+	# namespace a few tries to get the device back.
+	for ((i = 0; i < 5; i++)); do
+		guest_send_to_host "init_ns" "" "$(( port + i ))"
+		if [[ "${XFER_RESULT}" == TEST ]]; then
+			break
+		fi
+	done
+
+	guest_ns_cleanup || return "${KSFT_FAIL}"
+
+	if [[ "${XFER_RESULT}" != TEST ]]; then
+		return "${KSFT_FAIL}"
+	fi
+
+	return "${KSFT_PASS}"
 }
 
 shared_vm_test() {
