@@ -35,11 +35,18 @@ declare -A PIDFILES
 # virtme-init mistakenly sets identical IPs to the ssh device and additional
 # devices, we instead opt out of using --ssh, add the device manually, and also
 # add the kernel cmdline options that virtme-init uses to setup the interface.
+#
+# virtme_ssh_cache is the directory the guest reads id_virtme.pub from and
+# writes the generated host keys to. virtme-ng only sets it when it adds the
+# ssh device itself, so point it at the .ssh directory of the home we share
+# with the guest and put the key we generated there under that name.
 readonly QEMU_TEST_PORT_FWD="hostfwd=tcp::${TEST_HOST_PORT}-:${TEST_GUEST_PORT}"
 readonly QEMU_SSH_PORT_FWD="hostfwd=tcp::${SSH_HOST_PORT}-:${SSH_GUEST_PORT}"
+readonly VM_SSH_CACHE=/root/.ssh
 readonly KERNEL_CMDLINE="\
 	virtme.dhcp net.ifnames=0 biosdevname=0 \
 	virtme.ssh virtme_ssh_channel=tcp virtme_ssh_user=$USER \
+	virtme_ssh_cache=${VM_SSH_CACHE} \
 "
 readonly LOG=$(mktemp /tmp/vsock_vmtest_XXXX.log)
 readonly TEST_HOME="$(mktemp -d /tmp/vmtest_home_XXXX)"
@@ -400,6 +407,7 @@ handle_build() {
 setup_home() {
 	mkdir -p "$(dirname "${SSH_KEY_PATH}")"
 	ssh-keygen -t ed25519 -f "${SSH_KEY_PATH}" -N "" -q
+	cp "${SSH_KEY_PATH}".pub "$(dirname "${SSH_KEY_PATH}")"/id_virtme.pub
 	cp "${VSOCK_TEST}" "${TEST_HOME}"/vsock_test
 }
 
