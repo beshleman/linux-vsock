@@ -12,6 +12,9 @@ $(VSOCK_TEST_DIR)/vsock_test: $(VSOCK_TEST_SRCS)
 	$(MAKE) -C $(VSOCK_TEST_DIR) vsock_test
 TEST_PROGS += vmtest.sh
 TEST_GEN_FILES := vsock_test
+TEST_GEN_PROGS := vsock_assign_g2h_netns
 
 include ../lib.mk
 
+# The rules above are read first, so make would otherwise stop at vsock_test.
+.DEFAULT_GOAL := all
