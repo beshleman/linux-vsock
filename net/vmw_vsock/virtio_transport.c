@@ -17,12 +17,26 @@
 #include <linux/virtio_ids.h>
 #include <linux/virtio_config.h>
 #include <linux/virtio_vsock.h>
+#include <linux/skbuff_ref.h>
+#include <net/page_pool/helpers.h>
 #include <linux/dma-mapping.h>
 #include <net/sock.h>
 #include <linux/mutex.h>
 #include <net/af_vsock.h>
 
 static struct workqueue_struct *virtio_vsock_workqueue;
+
+/* An RX buffer holds a max sized packet in RX_CHUNKS chunks of
+ * 2^RX_ORDER pages, so the device sees a short descriptor chain, behind a
+ * linear head that only holds the header. Payloads up to RX_COPYBREAK are
+ * copied out so they don't pin a whole buffer.
+ */
+#define VIRTIO_VSOCK_RX_ORDER		3
+#define VIRTIO_VSOCK_RX_PAGES \
+	(VIRTIO_VSOCK_MAX_PKT_BUF_SIZE / PAGE_SIZE)
+#define VIRTIO_VSOCK_RX_CHUNKS \
+	(VIRTIO_VSOCK_RX_PAGES >> VIRTIO_VSOCK_RX_ORDER)
+#define VIRTIO_VSOCK_RX_COPYBREAK	128
 static struct virtio_vsock __rcu *the_virtio_vsock;
 static DEFINE_MUTEX(the_virtio_vsock_mutex); /* protects the_virtio_vsock */
 static struct virtio_transport virtio_transport; /* forward declaration */
@@ -54,6 +68,10 @@ struct virtio_vsock {
 	bool rx_run;
 	int rx_buf_nr;
 	int rx_buf_max_nr;
+	/* Intact RX buffers to repost, freed up by copybreak */
+	struct sk_buff_head rx_spare;
+	struct scatterlist rx_sg[VIRTIO_VSOCK_RX_PAGES + 1];
+	struct page_pool *rx_pool;
 
 	u32 guest_cid;
 	bool seqpacket_allow;
@@ -308,10 +326,117 @@ out_rcu:
 	return ret;
 }
 
+/* Fill @skb with @n chunks of 2^@order pages, from @pool when given */
+static int virtio_vsock_fill_rx_frags(struct sk_buff *skb,
+				      struct page_pool *pool,
+				      unsigned int order, unsigned int n)
+{
+	gfp_t gfp = GFP_KERNEL | (order ? __GFP_NOWARN : 0);
+	unsigned int i, chunk = PAGE_SIZE << order;
+
+	for (i = 0; i < n; i++) {
+		struct page *page;
+
+		if (pool)
+			page = page_pool_alloc_pages(pool, gfp);
+		else
+			page = alloc_pages(gfp, order);
+		if (!page)
+			return -ENOMEM;
+		/* len/data_len are set once the device has filled the buffer */
+		skb_fill_page_desc(skb, i, page, 0, chunk);
+		skb->truesize += chunk;
+	}
+	return 0;
+}
+
+static struct sk_buff *virtio_vsock_alloc_rx_buf(struct virtio_vsock *vsock)
+{
+	struct sk_buff *skb;
+
+	skb = alloc_skb(VIRTIO_VSOCK_SKB_HEADROOM, GFP_KERNEL);
+	if (!skb)
+		return NULL;
+
+	skb_reserve(skb, VIRTIO_VSOCK_SKB_HEADROOM);
+	skb_mark_for_recycle(skb);
+	if (!virtio_vsock_fill_rx_frags(skb, vsock->rx_pool,
+					VIRTIO_VSOCK_RX_ORDER,
+					VIRTIO_VSOCK_RX_CHUNKS))
+		return skb;
+	kfree_skb(skb);
+
+	/* Memory is too fragmented for the pool, use order-0 pages */
+	skb = alloc_skb(VIRTIO_VSOCK_SKB_HEADROOM, GFP_KERNEL);
+	if (!skb)
+		return NULL;
+
+	skb_reserve(skb, VIRTIO_VSOCK_SKB_HEADROOM);
+	if (!virtio_vsock_fill_rx_frags(skb, NULL, 0, VIRTIO_VSOCK_RX_PAGES))
+		return skb;
+	kfree_skb(skb);
+	return NULL;
+}
+
+static int virtio_vsock_add_rx_buf(struct virtio_vsock *vsock,
+				   struct virtqueue *vq, struct sk_buff *skb)
+{
+	struct skb_shared_info *si = skb_shinfo(skb);
+	int i;
+
+	sg_init_table(vsock->rx_sg, si->nr_frags + 1);
+	sg_set_buf(&vsock->rx_sg[0], virtio_vsock_hdr(skb),
+		   VIRTIO_VSOCK_SKB_HEADROOM);
+	for (i = 0; i < si->nr_frags; i++)
+		sg_set_page(&vsock->rx_sg[i + 1], skb_frag_page(&si->frags[i]),
+			    skb_frag_size(&si->frags[i]), 0);
+
+	return virtqueue_add_inbuf(vq, vsock->rx_sg, si->nr_frags + 1, skb,
+				   GFP_KERNEL);
+}
+
+/* Turn a filled RX buffer into the skb to deliver */
+static struct sk_buff *virtio_vsock_rx_buf_finish(struct virtio_vsock *vsock,
+						  struct sk_buff *skb,
+						  u32 payload_len)
+{
+	struct skb_shared_info *si = skb_shinfo(skb);
+	unsigned int chunk = skb_frag_size(&si->frags[0]);
+	unsigned int i, nchunks;
+	struct sk_buff *small;
+
+	if (payload_len <= VIRTIO_VSOCK_RX_COPYBREAK) {
+		small = virtio_vsock_alloc_linear_skb(payload_len ?
+				VIRTIO_VSOCK_DEFAULT_RX_BUF_SIZE :
+				VIRTIO_VSOCK_SKB_HEADROOM, GFP_KERNEL);
+		if (small) {
+			memcpy(virtio_vsock_hdr(small), virtio_vsock_hdr(skb),
+			       VIRTIO_VSOCK_SKB_HEADROOM);
+			if (payload_len)
+				memcpy(skb_put(small, payload_len),
+				       skb_frag_address(&si->frags[0]),
+				       payload_len);
+			__skb_queue_tail(&vsock->rx_spare, skb);
+			return small;
+		}
+	}
+
+	nchunks = DIV_ROUND_UP(payload_len, chunk);
+	for (i = nchunks; i < si->nr_frags; i++)
+		__skb_frag_unref(&si->frags[i], skb->pp_recycle);
+	skb->truesize -= (si->nr_frags - nchunks) * chunk;
+	si->nr_frags = nchunks;
+	if (nchunks)
+		skb_frag_size_set(&si->frags[nchunks - 1],
+				  payload_len - (nchunks - 1) * chunk);
+	skb->len = payload_len;
+	skb->data_len = payload_len;
+
+	return skb;
+}
+
 static void virtio_vsock_rx_fill(struct virtio_vsock *vsock)
 {
-	int total_len = VIRTIO_VSOCK_DEFAULT_RX_BUF_SIZE;
-	struct scatterlist pkt, *p;
 	struct virtqueue *vq;
 	struct sk_buff *skb;
 	int ret;
@@ -319,14 +444,13 @@ static void virtio_vsock_rx_fill(struct virtio_vsock *vsock)
 	vq = vsock->vqs[VSOCK_VQ_RX];
 
 	do {
-		skb = virtio_vsock_alloc_linear_skb(total_len, GFP_KERNEL);
+		skb = __skb_dequeue(&vsock->rx_spare);
+		if (!skb)
+			skb = virtio_vsock_alloc_rx_buf(vsock);
 		if (!skb)
 			break;
 
-		memset(skb->head, 0, VIRTIO_VSOCK_SKB_HEADROOM);
-		sg_init_one(&pkt, virtio_vsock_hdr(skb), total_len);
-		p = &pkt;
-		ret = virtqueue_add_sgs(vq, &p, 0, 1, skb, GFP_KERNEL);
+		ret = virtio_vsock_add_rx_buf(vsock, vq, skb);
 		if (ret < 0) {
 			kfree_skb(skb);
 			break;
@@ -645,7 +769,7 @@ static void virtio_transport_rx_work(struct work_struct *work)
 	do {
 		virtqueue_disable_cb(vq);
 		for (;;) {
-			unsigned int len, payload_len;
+			unsigned int len, payload_len, buf_len;
 			struct virtio_vsock_hdr *hdr;
 			struct sk_buff *skb;
 
@@ -664,8 +788,10 @@ static void virtio_transport_rx_work(struct work_struct *work)
 			vsock->rx_buf_nr--;
 
 			/* Drop short/long packets */
-			if (unlikely(len < sizeof(*hdr) ||
-				     len > virtio_vsock_skb_len(skb))) {
+			buf_len = VIRTIO_VSOCK_SKB_HEADROOM +
+				  skb_shinfo(skb)->nr_frags *
+				  skb_frag_size(&skb_shinfo(skb)->frags[0]);
+			if (unlikely(len < sizeof(*hdr) || len > buf_len)) {
 				kfree_skb(skb);
 				continue;
 			}
@@ -677,8 +803,8 @@ static void virtio_transport_rx_work(struct work_struct *work)
 				continue;
 			}
 
-			if (payload_len)
-				virtio_vsock_skb_put(skb, payload_len);
+			skb = virtio_vsock_rx_buf_finish(vsock, skb,
+							 payload_len);
 
 			virtio_transport_deliver_tap_pkt(skb);
 
@@ -784,6 +910,7 @@ static void virtio_vsock_vqs_del(struct virtio_vsock *vsock)
 	mutex_lock(&vsock->rx_lock);
 	while ((skb = virtqueue_detach_unused_buf(vsock->vqs[VSOCK_VQ_RX])))
 		kfree_skb(skb);
+	__skb_queue_purge(&vsock->rx_spare);
 	mutex_unlock(&vsock->rx_lock);
 
 	mutex_lock(&vsock->tx_lock);
@@ -799,6 +926,11 @@ static void virtio_vsock_vqs_del(struct virtio_vsock *vsock)
 
 static int virtio_vsock_probe(struct virtio_device *vdev)
 {
+	struct page_pool_params pp = {
+		.order		= VIRTIO_VSOCK_RX_ORDER,
+		.pool_size	= 256 * VIRTIO_VSOCK_RX_CHUNKS,
+		.nid		= NUMA_NO_NODE,
+	};
 	struct virtio_vsock *vsock = NULL;
 	int ret;
 	int i;
@@ -827,6 +959,7 @@ static int virtio_vsock_probe(struct virtio_device *vdev)
 	mutex_init(&vsock->rx_lock);
 	mutex_init(&vsock->event_lock);
 	skb_queue_head_init(&vsock->send_pkt_queue);
+	__skb_queue_head_init(&vsock->rx_spare);
 	INIT_WORK(&vsock->rx_work, virtio_transport_rx_work);
 	INIT_WORK(&vsock->tx_work, virtio_transport_tx_work);
 	INIT_WORK(&vsock->event_work, virtio_transport_event_work);
@@ -837,9 +970,16 @@ static int virtio_vsock_probe(struct virtio_device *vdev)
 
 	vdev->priv = vsock;
 
+	pp.dev = &vdev->dev;
+	vsock->rx_pool = page_pool_create(&pp);
+	if (IS_ERR(vsock->rx_pool)) {
+		ret = PTR_ERR(vsock->rx_pool);
+		goto out;
+	}
+
 	ret = virtio_vsock_vqs_init(vsock);
 	if (ret < 0)
-		goto out;
+		goto out_pool;
 
 	for (i = 0; i < ARRAY_SIZE(vsock->out_sgs); i++)
 		vsock->out_sgs[i] = &vsock->out_bufs[i];
@@ -851,6 +991,8 @@ static int virtio_vsock_probe(struct virtio_device *vdev)
 
 	return 0;
 
+out_pool:
+	page_pool_destroy(vsock->rx_pool);
 out:
 	kfree(vsock);
 	mutex_unlock(&the_virtio_vsock_mutex);
@@ -879,6 +1021,7 @@ static void virtio_vsock_remove(struct virtio_device *vdev)
 
 	mutex_unlock(&the_virtio_vsock_mutex);
 
+	page_pool_destroy(vsock->rx_pool);
 	kfree(vsock);
 }
 

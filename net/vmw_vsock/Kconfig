@@ -54,6 +54,7 @@ config VIRTIO_VSOCKETS
 	tristate "virtio transport for Virtual Sockets"
 	depends on VSOCKETS && VIRTIO
 	select VIRTIO_VSOCKETS_COMMON
+	select PAGE_POOL
 	help
 	  This module implements a virtio transport for Virtual Sockets.
 
