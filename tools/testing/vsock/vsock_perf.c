@@ -235,7 +235,9 @@ static void run_receiver(int rcvlowat_bytes)
 			total_recv += bytes_read;
 		}
 
-		if (fds.revents & (POLLHUP | POLLRDHUP))
+		/* Keep reading what the peer sent before hanging up */
+		if ((fds.revents & (POLLHUP | POLLRDHUP)) &&
+		    !(fds.revents & POLLIN))
 			break;
 	}
 
